@@ -11,7 +11,7 @@ import sys
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QGroupBox, QHBoxLayout,
+    QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QProgressBar, QPushButton, QSplitter, QSpinBox, QStackedWidget,
     QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
@@ -273,6 +273,263 @@ class _StreamCapture:
 #  主对话框
 # ═══════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════
+#  AI 模型设置对话框
+# ═══════════════════════════════════════════════════════════════════
+
+#: 支持的 AI 提供商元数据（顺序即默认容灾顺序）
+_AI_PROVIDER_META = [
+    {"key": "deepseek", "label": "DeepSeek",
+     "base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
+    {"key": "openai", "label": "OpenAI GPT",
+     "base_url": "https://api.openai.com", "model": "gpt-4o-mini"},
+    {"key": "claude", "label": "Anthropic Claude",
+     "base_url": "https://api.anthropic.com", "model": "claude-3-5-haiku-20241022"},
+    {"key": "wenxin", "label": "百度文心一言",
+     "base_url": "https://aip.baidubce.com", "model": "ernie-4.0-turbo-8k",
+     "secret": True},
+    {"key": "stepfun", "label": "阶跃星辰 StepFun",
+     "base_url": "https://api.stepfun.com", "model": "step-3.5-flash",
+     "path_prefix": "/step_plan/v1"},
+]
+
+
+class AISettingsDialog(QDialog):
+    """多模型 AI 答题配置对话框。
+
+    配置写入 ``engine/config.json``（已被 .gitignore），引擎构建答题
+    客户端时优先读取，保存后下次答题自动生效，无需重启程序。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("AI 模型设置")
+        self.setMinimumSize(580, 580)
+
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._engine_dir = os.path.join(project_root, "engine")
+        self._config_path = os.path.join(self._engine_dir, "config.json")
+
+        self._fields: dict[str, dict] = {}  # provider key -> {字段名: QLineEdit}
+        self._data = self._load_raw()
+        self._build_ui()
+
+    # ── 数据读取 ─────────────────────────────────────────
+
+    def _load_raw(self) -> dict:
+        """读取 config.json；不存在或损坏时以空模板初始化。"""
+        import json
+        try:
+            if os.path.exists(self._config_path):
+                with open(self._config_path, encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            log.warning(f"读取 AI 配置失败，将使用空模板: {e}")
+        return {}
+
+    def _section(self, key: str) -> dict:
+        section = self._data.get(key)
+        return section if isinstance(section, dict) else {}
+
+    # ── 界面构建 ─────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        # 默认提供商
+        row_def = QHBoxLayout()
+        row_def.addWidget(QLabel("默认提供商:"))
+        self._default_cb = QComboBox()
+        for meta in _AI_PROVIDER_META:
+            self._default_cb.addItem(meta["label"], meta["key"])
+        default_key = str(self._data.get("default_provider", "deepseek"))
+        idx = self._default_cb.findData(default_key)
+        if idx >= 0:
+            self._default_cb.setCurrentIndex(idx)
+        row_def.addWidget(self._default_cb)
+        row_def.addStretch()
+        root.addLayout(row_def)
+
+        # 调用优先级（容灾链）
+        chain_box = QGroupBox("调用优先级（勾选启用，可用上移/下移调整顺序）")
+        chain_l = QVBoxLayout(chain_box)
+        self._chain_list = QListWidget()
+        self._chain_list.setMinimumHeight(120)
+        saved_priority = self._data.get("priority")
+        if not isinstance(saved_priority, list) or not saved_priority:
+            saved_priority = [
+                m["key"] for m in _AI_PROVIDER_META if m["key"] != "stepfun"
+            ]
+        ordered_keys = list(saved_priority) + [
+            m["key"] for m in _AI_PROVIDER_META if m["key"] not in saved_priority
+        ]
+        for key in ordered_keys:
+            meta = next(m for m in _AI_PROVIDER_META if m["key"] == key)
+            item = QListWidgetItem(meta["label"])
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if key in saved_priority
+                else Qt.CheckState.Unchecked
+            )
+            self._chain_list.addItem(item)
+        chain_l.addWidget(self._chain_list)
+        mv_row = QHBoxLayout()
+        up_btn = QPushButton("上移")
+        down_btn = QPushButton("下移")
+        up_btn.clicked.connect(lambda: self._move_item(-1))
+        down_btn.clicked.connect(lambda: self._move_item(1))
+        mv_row.addWidget(up_btn)
+        mv_row.addWidget(down_btn)
+        mv_row.addStretch()
+        chain_l.addLayout(mv_row)
+        root.addWidget(chain_box)
+
+        # 全局请求参数
+        g_box = QGroupBox("全局请求参数")
+        g_form = QFormLayout(g_box)
+        self._timeout_spin = QSpinBox()
+        self._timeout_spin.setRange(5, 300)
+        self._timeout_spin.setSuffix(" 秒")
+        self._timeout_spin.setValue(int(self._data.get("timeout", 30) or 30))
+        self._retry_spin = QSpinBox()
+        self._retry_spin.setRange(0, 5)
+        self._retry_spin.setValue(int(self._data.get("max_retries", 1) or 0))
+        g_form.addRow("请求超时:", self._timeout_spin)
+        g_form.addRow("失败重试:", self._retry_spin)
+        root.addWidget(g_box)
+
+        # 各提供商参数
+        prov_box = QGroupBox("提供商参数")
+        prov_l = QHBoxLayout(prov_box)
+        self._prov_cb = QComboBox()
+        self._prov_stack = QStackedWidget()
+        for meta in _AI_PROVIDER_META:
+            self._prov_cb.addItem(meta["label"], meta["key"])
+            page, fields = self._build_provider_page(meta)
+            self._prov_stack.addWidget(page)
+            self._fields[meta["key"]] = fields
+        self._prov_cb.currentIndexChanged.connect(self._prov_stack.setCurrentIndex)
+        prov_l.addWidget(self._prov_cb)
+        prov_l.addWidget(self._prov_stack, 1)
+        root.addWidget(prov_box, 1)
+
+        # 保存 / 取消
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("取消")
+        save_btn = QPushButton("保存")
+        save_btn.setMinimumWidth(90)
+        cancel_btn.clicked.connect(self.reject)
+        save_btn.clicked.connect(self._on_save)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        root.addLayout(btn_row)
+
+    def _build_provider_page(self, meta: dict):
+        page = QWidget()
+        form = QFormLayout(page)
+        section = self._section(meta["key"])
+
+        def mk_line(value, password=False, placeholder=""):
+            edit = QLineEdit(str(value or ""))
+            if placeholder:
+                edit.setPlaceholderText(placeholder)
+            if password:
+                edit.setEchoMode(QLineEdit.EchoMode.Password)
+            return edit
+
+        fields = {}
+        fields["api_key"] = mk_line(
+            section.get("api_key", ""), password=True, placeholder="粘贴 API Key"
+        )
+        form.addRow("API Key:", fields["api_key"])
+        if meta.get("secret"):
+            fields["secret_key"] = mk_line(
+                section.get("secret_key", ""), password=True,
+                placeholder="粘贴 Secret Key",
+            )
+            form.addRow("Secret Key:", fields["secret_key"])
+        fields["base_url"] = mk_line(section.get("base_url", meta["base_url"]))
+        form.addRow("Base URL:", fields["base_url"])
+        fields["model"] = mk_line(section.get("model", meta["model"]))
+        form.addRow("模型:", fields["model"])
+        if meta.get("path_prefix"):
+            fields["path_prefix"] = mk_line(
+                section.get("path_prefix", meta["path_prefix"])
+            )
+            form.addRow("路径前缀:", fields["path_prefix"])
+        return page, fields
+
+    # ── 交互 ─────────────────────────────────────────────
+
+    def _move_item(self, delta: int):
+        row = self._chain_list.currentRow()
+        target = row + delta
+        if row < 0 or target < 0 or target >= self._chain_list.count():
+            return
+        item = self._chain_list.takeItem(row)
+        self._chain_list.insertItem(target, item)
+        self._chain_list.setCurrentRow(target)
+
+    def _on_save(self):
+        import json
+
+        priority = []
+        for i in range(self._chain_list.count()):
+            item = self._chain_list.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                priority.append(item.data(Qt.ItemDataRole.UserRole))
+        default_key = self._default_cb.currentData()
+        if not priority:
+            QMessageBox.warning(
+                self, "无法保存", "请至少在调用优先级中勾选一个提供商。"
+            )
+            return
+        if default_key not in priority:
+            QMessageBox.warning(
+                self, "无法保存",
+                f"默认提供商「{self._default_cb.currentText()}」未在调用优先级中启用，"
+                "请先勾选，或将默认提供商改为已启用项。",
+            )
+            return
+
+        out = {
+            "default_provider": default_key,
+            "priority": priority,
+            "timeout": self._timeout_spin.value(),
+            "max_retries": self._retry_spin.value(),
+        }
+        for meta in _AI_PROVIDER_META:
+            key = meta["key"]
+            f = self._fields[key]
+            section = {
+                "api_key": f["api_key"].text().strip(),
+                "base_url": f["base_url"].text().strip() or meta["base_url"],
+                "model": f["model"].text().strip() or meta["model"],
+            }
+            if meta.get("secret"):
+                section["secret_key"] = f["secret_key"].text().strip()
+            if meta.get("path_prefix"):
+                section["path_prefix"] = f["path_prefix"].text().strip()
+            out[key] = section
+
+        try:
+            os.makedirs(self._engine_dir, exist_ok=True)
+            tmp_path = self._config_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fp:
+                json.dump(out, fp, ensure_ascii=False, indent=4)
+            os.replace(tmp_path, self._config_path)
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", f"写入 config.json 失败:\n{e}")
+            return
+        self.accept()
+
+
 class CourseWorkshop(QDialog):
     status_updated = pyqtSignal(str, str, str)
 
@@ -383,6 +640,12 @@ class CourseWorkshop(QDialog):
 
         self._switch_mode("auto")
 
+    def _open_ai_settings(self):
+        """打开多模型 AI 设置；保存成功后刷新就绪状态提示。"""
+        dlg = AISettingsDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._refresh_mode_hint()
+
     def _switch_mode(self, mode: str):
         for m, btn in self._mode_btns.items():
             btn.setChecked(m == mode)
@@ -490,6 +753,18 @@ class CourseWorkshop(QDialog):
         self._mode_hint.setStyleSheet("color:#94a3b8;font-size:11px;")
         sgl.addWidget(self._mode_hint)
         self._strategy_cb.currentTextChanged.connect(lambda _: self._refresh_mode_hint())
+
+        row_ai = QHBoxLayout()
+        self._ai_settings_btn = QPushButton("AI 模型设置…")
+        self._ai_settings_btn.setToolTip(
+            "配置多模型 AI 答题：DeepSeek / GPT / Claude / 文心一言 / 阶跃星辰，\n"
+            "设置各厂商 API 密钥、默认模型与调用优先级（容灾链）"
+        )
+        self._ai_settings_btn.setMinimumHeight(26)
+        self._ai_settings_btn.clicked.connect(self._open_ai_settings)
+        row_ai.addWidget(self._ai_settings_btn)
+        row_ai.addStretch()
+        sgl.addLayout(row_ai)
 
         row_t = QHBoxLayout()
         self._thread_chk = QCheckBox("多线程")

@@ -761,6 +761,15 @@ class EngineAdapter:
             core_dir = os.path.dirname(os.path.abspath(__file__))
             if core_dir not in sys.path:
                 sys.path.insert(0, core_dir)
+            # 优先：多模型统一架构（DeepSeek/GPT/Claude/文心，按优先级容灾）
+            try:
+                from ai_providers import build_multi_client  # type: ignore[import-not-found]
+                multi = build_multi_client()
+                if multi is not None:
+                    return multi
+            except Exception:
+                pass
+            # 回退：历史单客户端
             try:
                 from deepseek_ai_enhanced import DeepSeekAI  # type: ignore[import-not-found]
                 return DeepSeekAI()

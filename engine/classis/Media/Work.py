@@ -228,6 +228,16 @@ class Work(Media):
         if self._ai_client is not None:
             return self._ai_client
 
+        # 优先：多模型统一架构（DeepSeek/GPT/Claude/文心/StepFun，按优先级容灾）
+        try:
+            from ai_providers import build_multi_client
+            multi = build_multi_client()
+            if multi is not None:
+                self._ai_client = multi
+                return self._ai_client
+        except Exception as e:
+            loguru.logger.debug(f"多模型客户端加载失败: {e}")
+
         provider = self._get_ai_provider_from_config()
 
         if provider == "stepfun":
@@ -254,11 +264,6 @@ class Work(Media):
             return self._ai_client
         except Exception as e:
             loguru.logger.debug(f"增强版AI加载失败: {e}")
-        try:
-            from deepseek_ai import DeepSeekAI
-            self._ai_client = DeepSeekAI()
-        except Exception:
-            pass
         if self._ai_client is None:
             try:
                 from src.ai_assistant import DeepSeekAI

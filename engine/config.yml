@@ -67,13 +67,46 @@ TikuConfig:
   submit: false  # 是否自动提交
   check_llm_connection: true  # 是否检查大模型连接
 
-NotificationConfig:
-  provider: ''  # 通知服务提供商: ServerChan, Qmsg, Bark, Telegram, PushPlus
-  sendkey: ''  # ServerChan sendkey
-  key: ''  # Qmsg/Bark key
-  bot_token: ''  # Telegram Bot Token
-  chat_id: ''  # Telegram Chat ID
-  url: ''  # 通知URL
+AIConfig:
+  # 多模型 AI 答题配置（GUI「AI 模型设置」的修改写入 config.json 并优先于本段）
+  active: deepseek            # 默认提供商
+  priority:                   # 调用优先级链：自上而下依次尝试，某家失败自动切换
+    - deepseek
+    - openai
+    - claude
+    - wenxin
+  timeout: 30                 # 统一请求超时（秒）
+  max_retries: 1              # 单提供商可重试错误（超时/限流/5xx）的重试次数
+  providers:
+    deepseek:
+      api_key: ''
+      base_url: 'https://api.deepseek.com'
+      model: 'deepseek-chat'
+      max_tokens: 10
+      max_tokens_content: 512
+      temperature: 0.0
+    openai:
+      api_key: ''
+      base_url: 'https://api.openai.com'
+      model: 'gpt-4o-mini'
+      max_tokens: 10
+      max_tokens_content: 512
+      temperature: 0.0
+    claude:
+      api_key: ''
+      base_url: 'https://api.anthropic.com'
+      model: 'claude-3-5-haiku-20241022'
+      max_tokens: 10
+      max_tokens_content: 512
+      temperature: 0.0
+    wenxin:
+      api_key: ''             # 百度云 Client ID
+      secret_key: ''          # 百度云 Client Secret
+      base_url: 'https://aip.baidubce.com'
+      model: 'ernie-4.0-turbo-8k'
+      max_tokens: 10
+      max_tokens_content: 512
+      temperature: 0.0
 
 SignConfig:
   enable: true  # 是否启用自动签到

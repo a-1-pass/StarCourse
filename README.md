@@ -6,7 +6,7 @@ A desktop automation tool for progressing through online course content on the C
 
 - **Multi-account management** — add, remove, and monitor multiple accounts from a single interface
 - **Automated video completion** — instant finish or timed playback modes
-- **AI-assisted quiz answering** — integrates DeepSeek and StepFun APIs; automatically falls back to heuristic strategies when unconfigured
+- **AI-assisted quiz answering** — multi-provider architecture (DeepSeek, OpenAI GPT, Claude, Baidu Wenxin, StepFun) with priority-based failover and unified timeout/retry handling
 - **Document and reading tasks** — auto-complete reading nodes, documents, and book chapters
 - **Task queue** — chain multiple courses into a queue with pause / stop controls and real-time progress
 - **Chapter selection** — optionally target specific chapters instead of processing an entire course
@@ -30,22 +30,21 @@ pip install -r requirements.txt
 
 ### Configuration (optional — AI answering)
 
+StarCourse supports multiple LLM providers — DeepSeek, OpenAI GPT, Anthropic
+Claude, Baidu Wenxin, and StepFun — with per-provider keys and a priority-based
+failover chain.
+
 ```bash
 cp config.example.json config.json
 ```
 
-Edit `config.json` and fill in your DeepSeek API key:
+Edit `config.json` and fill in the API key(s) of the provider(s) you want to
+use. The same configuration is available in the GUI under **Advanced settings
+→ AI model settings**. Full field reference, code examples, and the provider
+extension guide: [docs/ai_providers.md](docs/ai_providers.md).
 
-```json
-{
-    "api_key": "your-api-key",
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-chat",
-    "max_tokens": 10
-}
-```
-
-Without AI configuration, quiz answering defaults to selecting the first option or random choice.
+Without AI configuration, quiz answering defaults to question-bank lookups or
+local strategies (first option / random).
 
 ### Running
 
@@ -76,7 +75,6 @@ StarCourse/
 ├── src/                       # Core logic layer
 │   ├── log_manager.py         #   Logging (rotation + auto-cleanup)
 │   ├── network_utils.py       #   Anti-detection UA pool + helpers
-│   ├── crypto.py              #   Encryption utilities
 │   ├── ai_assistant.py        #   DeepSeek AI client
 │   ├── stepfun_ai.py          #   StepFun AI client
 │   ├── engine_adapter.py      #   High-level engine façade
@@ -91,12 +89,10 @@ StarCourse/
 │   ├── utils.py               #   HTTP request helpers
 │   ├── card_decode.py         #   Task-point decoder
 │   ├── cache_dao.py           #   Answer cache
-│   ├── cookies_manager.py     #   Cookie management
 │   ├── tiku.py                #   Question bank interface
-│   ├── retry_manager.py      #   Retry logic
-│   ├── notification.py       #   Push notifications
 │   ├── deepseek_ai_enhanced.py # Enhanced AI answering
 │   ├── stepfun_ai.py         #   StepFun AI client
+│   ├── ai_providers/         #   Multi-provider AI architecture (GPT/Claude/Wenxin/…)
 │   ├── classis/               #   Domain objects
 │   │   ├── User/              #     Authentication + course data
 │   │   ├── Course/            #     Course model
@@ -113,6 +109,9 @@ StarCourse/
 └── gui/                       # PyQt6 GUI layer
     ├── account_panel.py       #   Account list + toolbar
     └── course_workshop.py     #   Course workspace (login → queue → progress)
+
+docs/
+└── ai_providers.md            # Multi-model API reference & examples
 ```
 
 ## Configuration
@@ -121,10 +120,15 @@ StarCourse/
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `api_key` | DeepSeek API key | — |
-| `base_url` | API endpoint | `https://api.deepseek.com` |
-| `model` | Model name | `deepseek-chat` |
-| `max_tokens` | Max response tokens | `10` |
+| `default_provider` | Active provider | `deepseek` |
+| `priority` | Provider failover chain (tried in order) | `["deepseek"]` |
+| `timeout` | Unified request timeout (seconds) | `30` |
+| `max_retries` | Retries for timeout / rate-limit / 5xx | `0` |
+| `<provider>.api_key` | Per-provider API key (`wenxin` also needs `secret_key`) | — |
+| `<provider>.base_url` / `model` | Endpoint root / model name | provider defaults |
+
+Full reference, code examples, and extension guide:
+[docs/ai_providers.md](docs/ai_providers.md).
 
 ### Engine Config (`engine/config.yml`)
 

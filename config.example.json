@@ -1,5 +1,13 @@
 {
     "default_provider": "deepseek",
+    "priority": [
+        "deepseek",
+        "openai",
+        "claude",
+        "wenxin"
+    ],
+    "timeout": 30,
+    "max_retries": 1,
     "deepseek": {
         "api_key": "",
         "base_url": "https://api.deepseek.com",
@@ -11,6 +19,39 @@
         "min_interval_seconds": 0,
         "max_tokens_content": 512,
         "http_proxy": ""
+    },
+    "openai": {
+        "api_key": "",
+        "base_url": "https://api.openai.com",
+        "model": "gpt-4o-mini",
+        "max_tokens": 10,
+        "temperature": 0.0,
+        "max_tokens_content": 512,
+        "min_interval_seconds": 0,
+        "http_proxy": "",
+        "_comment": "OpenAI GPT 系列（gpt-4o/gpt-4o-mini/gpt-3.5-turbo）；国内直连失败时可在 http_proxy 配置代理，或将 base_url 改为 OpenAI 兼容网关地址"
+    },
+    "claude": {
+        "api_key": "",
+        "base_url": "https://api.anthropic.com",
+        "model": "claude-3-5-haiku-20241022",
+        "max_tokens": 10,
+        "temperature": 0.0,
+        "max_tokens_content": 512,
+        "min_interval_seconds": 0,
+        "http_proxy": "",
+        "_comment": "Anthropic Claude；日常答题选 claude-3-5-haiku，复杂主观题可选 claude-3-5-sonnet；Key 到 https://console.anthropic.com 申请"
+    },
+    "wenxin": {
+        "api_key": "",
+        "secret_key": "",
+        "base_url": "https://aip.baidubce.com",
+        "model": "ernie-4.0-turbo-8k",
+        "max_tokens": 10,
+        "temperature": 0.0,
+        "max_tokens_content": 512,
+        "min_interval_seconds": 0,
+        "_comment": "百度文心一言（ERNIE）；需同时填写 API Key(Client ID) 与 Secret Key(Client Secret)，在百度智能云控制台创建应用后获取"
     },
     "stepfun": {
         "api_key": "",
