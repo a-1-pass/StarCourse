@@ -1,0 +1,1 @@
+"""StarCourse — core modules."""

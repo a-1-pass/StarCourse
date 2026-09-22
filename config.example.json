@@ -1,0 +1,29 @@
+{
+    "default_provider": "deepseek",
+    "deepseek": {
+        "api_key": "",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "max_tokens": 10,
+        "temperature": 0.0,
+        "_comment": "API Key 请到 https://platform.deepseek.com 申请，填入后重启程序；请勿提交本文件到仓库",
+        "use_openai_sdk": false,
+        "min_interval_seconds": 0,
+        "max_tokens_content": 512,
+        "http_proxy": ""
+    },
+    "stepfun": {
+        "api_key": "",
+        "base_url": "https://api.stepfun.com",
+        "path_prefix": "/step_plan/v1",
+        "model": "step-3.5-flash",
+        "max_tokens": 10,
+        "temperature": 0.0,
+        "reasoning_effort": "medium",
+        "use_openai_sdk": false,
+        "min_interval_seconds": 0,
+        "max_tokens_content": 512,
+        "http_proxy": "",
+        "_comment": "阶跃星辰 Step Plan 推理大模型，支持模型：step-3.7-flash, step-3.5-flash-2603, step-3.5-flash, step-router-v1；Key 请到控制台申请"
+    }
+}

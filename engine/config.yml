@@ -1,0 +1,85 @@
+InfoStr:
+  instructions: |-
+    StarCourse — 超星学习通课程自动化工具
+    使用前请确认您使用的是最新版，防止因为超星系统更新导致的功能失效
+    
+    使用须知与功能介绍:
+    1.本项目支持一键完成的任务点不包括考试与测试
+    2.输入密码时会被自动隐藏，防止您的密码被偷窥
+    3.项目不能完全保证不被系统识别异常，请理性使用
+    4.所有功能均采用发送GET/POST请求包完成，效率更高且占用资源低
+  signStr: |-
+    1.使用用户名（手机号）与密码进行登录
+    2.使用Cookie进行登录
+    请选择您的登录方式：
+  errSignMode: 请输入正确的序号，如果您不清楚怎么选，请默认选择1
+
+GloConfig:
+  timeout: 3  # 全局requests模块的超时时长
+  delay: # 全局request请求的延迟时间，防止过快访问导致触发反爬
+    enable: True
+    time: 0.5 # 支持小数，单位为秒
+  headers:
+    # User-Agent 由 src.network_utils 在运行时按当前操作系统动态注入真实浏览器 UA
+    # （Windows / Linux / macOS 各自匹配），此处仅为降级默认值，正常不会生效
+    User-Agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  debug:
+    enable: True  # 是否开启debug模式，即显示更加详细的软件日志
+    level: 8
+
+LogConfig:
+  max_log_size_mb: 10  # 单日志文件最大大小（MB），超过自动轮转
+  max_backup_count: 5  # 保留的日志备份数量
+  max_log_age_days: 7  # 日志文件保留天数，超过自动清理
+  enable_auto_cleanup: True  # 是否启用自动清理
+
+CacheConfig:
+  max_cache_size_mb: 50  # 单缓存文件最大大小（MB），超过自动清理
+  max_cache_age_days: 14  # 缓存数据保留天数
+  max_cache_items: 10000  # 最大缓存条目数
+  enable_auto_cleanup: True  # 是否启用自动清理
+  ai_cache_ttl_days: 30  # AI答案缓存有效期
+  tiku_cache_ttl_days: 7  # 题库答案缓存有效期
+  cookie_cache_ttl_days: 7  # Cookie缓存有效期
+
+FunConfig:
+  deal-mission:
+    video-mode: 1 # 0为立即完成,1为等时长刷取
+    single-thread: false  #是否为单线程刷取，如果为false则会同时启动所有待完成视频节点的线程
+    enable-multi-thread: true  # 是否开启多线程并发刷取
+    max-concurrent-threads: 5  # 最大并发线程数
+    cover-rate: 0.6  # 章节检测覆盖率阈值，低于此值仅保存不提交
+    submit-mode: auto  # auto=按覆盖率决定, save=仅保存
+    notopen-action: retry  # 遇到关闭任务点时的行为: retry-重试, ask-询问, continue-继续
+    speed: 1.0  # 视频播放倍速 (默认1.0, 最大2.0)
+    jobs: 4  # 同时进行的章节数 (默认4)
+  set-log:
+    delay: 30 # 刷取学习次数的延迟，单位s
+
+TikuConfig:
+  provider: ''  # 题库提供商: TikuYanxi, TikuGo, TikuLike, AI, SiliconFlow
+  token: ''  # 题库token（如果需要）
+  api_key: ''  # AI API Key（使用AI题库时需要；请勿填写他人泄露的密钥，请从控制台申请后配置）
+  base_url: 'https://api.deepseek.com'  # AI API Base URL
+  model: 'deepseek-chat'  # AI模型名称
+  delay: 0  # 搜题延迟（秒）
+  cover_rate: 0.8  # 覆盖率阈值
+  submit: false  # 是否自动提交
+  check_llm_connection: true  # 是否检查大模型连接
+
+NotificationConfig:
+  provider: ''  # 通知服务提供商: ServerChan, Qmsg, Bark, Telegram, PushPlus
+  sendkey: ''  # ServerChan sendkey
+  key: ''  # Qmsg/Bark key
+  bot_token: ''  # Telegram Bot Token
+  chat_id: ''  # Telegram Chat ID
+  url: ''  # 通知URL
+
+SignConfig:
+  enable: true  # 是否启用自动签到
+  check_interval: 60  # 签到检查间隔（秒）
+
+
+UserData:
+  cookie: ''
+  auto-sign: True

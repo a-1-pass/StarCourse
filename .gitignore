@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets & user data
+config.json
+profiles.json
+ai_config.json
+ai_answer_cache.json
+
+# Engine runtime data (答题记录数据库等本地数据)
+engine/data/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Engine static (no longer shipped)
+engine/static/

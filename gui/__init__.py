@@ -1,0 +1,1 @@
+"""StarCourse — GUI layer."""
