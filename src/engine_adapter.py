@@ -40,6 +40,22 @@ class EngineAdapter:
         self._init_engine_config()
         self._user = None
         self._courses: list[CourseBrief] = []
+        # 当前正在运行的刷课引擎实例（供 request_stop 中断）
+        self._current_runner = None
+
+    def request_stop(self):
+        """中断当前刷课流程（GUI 停止/暂停按钮调用）。
+
+        转发到正在运行的 DealCourse.request_stop()，使章节循环、
+        视频/直播等待处的检查点生效。无运行任务时为空操作。
+        """
+        runner = self._current_runner
+        if runner is None:
+            return
+        try:
+            runner.request_stop()
+        except Exception as exc:
+            log.debug(f"request_stop failed: {exc}")
 
     # ---- lifecycle ----
     def _init_engine_config(self):
@@ -408,17 +424,28 @@ class EngineAdapter:
             runner = DealCourse(self._user, course, progress_logger, strategy, ai, chapter_ids,
                                 multi_thread, max_threads, use_tiku=use_tiku,
                                 learning_mode=learning_mode, user_id=user_id)
-            runner.do_finish()
+            # 注册当前 runner，使 GUI 停止按钮能中断刷课内部循环
+            self._current_runner = runner
+            try:
+                runner.do_finish()
 
-            # join background video threads
-            if runner.thread_pool:
-                if on_progress:
-                    on_progress(f"Waiting for {len(runner.thread_pool)} video workers...")
-                for idx, thr in enumerate(runner.thread_pool):
-                    thr.join()
+                # join background video threads
+                if runner.thread_pool:
                     if on_progress:
-                        on_progress(f"  Worker {idx + 1}/{len(runner.thread_pool)} finished")
-                stats["videos"] = len(runner.thread_pool)
+                        on_progress(f"Waiting for {len(runner.thread_pool)} video workers...")
+                    for idx, thr in enumerate(runner.thread_pool):
+                        # 循环 join，停止后子线程会快速退出
+                        while thr.is_alive():
+                            thr.join(0.5)
+                        if on_progress:
+                            on_progress(f"  Worker {idx + 1}/{len(runner.thread_pool)} finished")
+                    stats["videos"] = len(runner.thread_pool)
+            finally:
+                self._current_runner = None
+
+            # 停止后不再回查章节统计
+            if runner.is_stopped:
+                return True, stats, "Course automation stopped by user"
 
             ok, chapters, _ = self.fetch_chapters(course_id, class_id, cpi)
             if ok:

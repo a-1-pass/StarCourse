@@ -16,17 +16,26 @@ class DealVideo:
         self.log = log
 
     @staticmethod
-    def run_video(video: Video, user, log, all_time: int = 0) -> bool:
+    def run_video(video: Video, user, log, all_time: int = 0, stop_event=None) -> bool:
         import threading
         thread_name = threading.current_thread().name
+
+        # 停止事件透传给 Video（Video.study 内部检查点 + 可中断等待）
+        if stop_event is not None:
+            video._stop_event = stop_event
 
         log.info(f"[{thread_name}] 开始处理视频: {video.name}")
         return video.study(all_time=all_time, log=log)
 
     @staticmethod
-    def run_live(live: Live, user, log):
+    def run_live(live: Live, user, log, stop_event=None):
         import threading
         thread_name = threading.current_thread().name
+
+        # 停止检查点（开始前）
+        if stop_event is not None and stop_event.is_set():
+            log.info(f"[{thread_name}] 直播 '{live.name}' 刷取已停止")
+            return
 
         live_status = live.get_status()
         if live_status:
@@ -53,11 +62,22 @@ class DealVideo:
         play_time = 0
 
         while play_time < duration:
+            # 停止检查点（每轮上报间隔）
+            if stop_event is not None and stop_event.is_set():
+                log.info(f"[{thread_name}] 直播 '{live.name}' 刷取已停止 ({int(play_time)}/{duration}秒)")
+                return
+
             wait_time = random.uniform(30, 90)
             actual_wait = min(wait_time, duration - play_time)
             play_time = min(play_time + actual_wait, duration)
 
-            time.sleep(actual_wait)
+            # 可中断等待：停止时立即退出，不再等待剩余的 30-90 秒
+            if stop_event is not None:
+                if stop_event.wait(timeout=actual_wait):
+                    log.info(f"[{thread_name}] 直播 '{live.name}' 刷取已停止 ({int(play_time)}/{duration}秒)")
+                    return
+            else:
+                time.sleep(actual_wait)
 
             progress_percent = round(play_time / duration * 100, 1)
             log.info(f"[{thread_name}] '{live.name}' 进度: {progress_percent}% ({int(play_time)}/{duration}秒, 间隔 {int(actual_wait)}秒)")

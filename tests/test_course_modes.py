@@ -407,6 +407,188 @@ class TestDoFinishDispatch:
 
 
 # ════════════════════════════════════════════════════════════
+# DealCourse 停止控制测试（快捷操作可中断能力的继承）
+# ════════════════════════════════════════════════════════════
+
+class TestStopControl:
+    """刷课引擎可被停止/暂停按钮中断。"""
+
+    def test_request_stop_sets_flag(self):
+        runner = _make_deal_course()
+        assert runner.is_stopped is False
+        runner.request_stop()
+        assert runner.is_stopped is True
+
+    def test_interruptible_sleep_returns_immediately(self):
+        import time as _time
+        runner = _make_deal_course()
+        runner.request_stop()
+        t0 = _time.monotonic()
+        interrupted = runner._interruptible_sleep(30)
+        elapsed = _time.monotonic() - t0
+        assert interrupted is True
+        assert elapsed < 1.0
+
+    def test_interruptible_sleep_waits_when_running(self):
+        runner = _make_deal_course()
+        t0 = __import__("time").monotonic()
+        interrupted = runner._interruptible_sleep(0.2)
+        assert interrupted is False
+        assert __import__("time").monotonic() - t0 >= 0.15
+
+    def test_stage_stops_before_first_chapter(self, monkeypatch, tmp_path):
+        dao = reset_course_progress_dao_for_test(str(tmp_path / "t.db"))
+        runner = _make_deal_course(learning_mode="stage", dao=dao)
+        runner.mission_list = [
+            {"id": "ch1", "name": "第一章"},
+            {"id": "ch2", "name": "第二章"},
+        ]
+
+        def boom(*_a, **_k):
+            pytest.fail("停止后不应调用 deal_chapter")
+
+        monkeypatch.setattr(runner, "deal_chapter", boom)
+        runner.request_stop()
+        runner._do_stage_mode(MagicMock(), dao)
+        # 未写任何章节进度
+        assert dao.list_chapter_progress("U1", "CID1") == []
+
+    def test_stage_repull_stop_writes_partial(self, monkeypatch, tmp_path):
+        """闯关重拉时停止：本章写 partial，下次可续学。"""
+        dao = reset_course_progress_dao_for_test(str(tmp_path / "t.db"))
+        runner = _make_deal_course(learning_mode="stage", dao=dao)
+        runner.mission_list = [{"id": "ch1", "name": "第一章"}]
+
+        pull_count = [0]
+
+        def fake_deal_chapter(_m):
+            pull_count[0] += 1
+            return [_attach(_media("A", passed=False))]
+
+        monkeypatch.setattr(runner, "deal_chapter", fake_deal_chapter)
+
+        def fake_process(*_a):
+            # 完成 A 的同时用户点停止
+            runner.request_stop()
+            return True, "A"
+
+        monkeypatch.setattr(runner, "_process_media", fake_process)
+        runner._do_stage_mode(MagicMock(), dao)
+
+        # 只拉取1次，重拉检查点检测停止后退出
+        assert pull_count[0] == 1
+        assert dao.get_resume_position("U1", "CID1") == "ch1"
+
+    def test_single_pass_stops_during_prefetch(self, monkeypatch, tmp_path):
+        runner = _make_deal_course(learning_mode="sequential")
+        runner.mission_list = [{"id": "ch1", "name": "第一章"}]
+
+        def boom(*_a, **_k):
+            pytest.fail("预拉取停止后不应调用 deal_chapter")
+
+        monkeypatch.setattr(runner, "deal_chapter", boom)
+        runner.request_stop()
+        runner._do_single_pass_mode(MagicMock(), None)
+
+    def test_sequential_stop_writes_partial(self, monkeypatch, tmp_path):
+        """顺序模式：ch1 刷完后停止，ch1 done、ch2 partial。"""
+        dao = reset_course_progress_dao_for_test(str(tmp_path / "t.db"))
+        runner = _make_deal_course(learning_mode="sequential", dao=dao)
+        runner.mission_list = [
+            {"id": "ch1", "name": "第一章"},
+            {"id": "ch2", "name": "第二章"},
+        ]
+
+        monkeypatch.setattr(
+            runner, "deal_chapter",
+            lambda m: [_attach(_media(f"m_{m['id']}", passed=False))])
+
+        def fake_process(*_a):
+            runner.request_stop()
+            return True, "ok"
+
+        monkeypatch.setattr(runner, "_process_media", fake_process)
+        runner._do_single_pass_mode(MagicMock(), dao)
+
+        assert "ch1" in dao.get_completed_chapters("U1", "CID1")
+        assert dao.get_resume_position("U1", "CID1") == "ch2"
+
+    def test_sequential_stop_between_medias_in_same_chapter(self, monkeypatch, tmp_path):
+        """同一章内任务点之间停止：写本章 partial，不处理后续任务点。"""
+        dao = reset_course_progress_dao_for_test(str(tmp_path / "t.db"))
+        runner = _make_deal_course(learning_mode="sequential", dao=dao)
+        runner.mission_list = [{"id": "ch1", "name": "第一章"}]
+
+        monkeypatch.setattr(
+            runner, "deal_chapter",
+            lambda _m: [_attach(_media("A", False), _media("B", False))])
+
+        processed = []
+
+        def fake_process(media, *_a):
+            processed.append(media["objectId"])
+            runner.request_stop()
+            return True, media["objectId"]
+
+        monkeypatch.setattr(runner, "_process_media", fake_process)
+        runner._do_single_pass_mode(MagicMock(), dao)
+
+        assert processed == ["A"]  # B 不处理
+        assert dao.get_resume_position("U1", "CID1") == "ch1"
+
+
+class TestAdapterRequestStop:
+    """EngineAdapter.request_stop 转发到当前 runner。"""
+
+    def test_forwards_to_runner(self):
+        from src.engine_adapter import EngineAdapter
+        adapter = EngineAdapter()
+        runner = MagicMock()
+        adapter._current_runner = runner
+        adapter.request_stop()
+        runner.request_stop.assert_called_once()
+
+    def test_no_runner_is_noop(self):
+        from src.engine_adapter import EngineAdapter
+        adapter = EngineAdapter()
+        adapter._current_runner = None
+        adapter.request_stop()  # 不抛异常
+
+    def test_auto_complete_returns_stopped_message(self, monkeypatch, tmp_path):
+        """do_finish 中途停止 → auto_complete 返回 stopped 提示。"""
+        from src.engine_adapter import EngineAdapter
+        adapter = EngineAdapter()
+        mock_course = MagicMock()
+        mock_course.ifOpen = True
+        monkeypatch.setattr(adapter, "_find_course", lambda _cid: mock_course)
+        monkeypatch.setattr(adapter, "_get_ai", lambda: None)
+
+        class FakeDealCourse:
+            def __init__(self, *a, **k):
+                self.thread_pool = []
+                self._stopped = False
+
+            def request_stop(self):
+                self._stopped = True
+
+            @property
+            def is_stopped(self):
+                return self._stopped
+
+            def do_finish(self):
+                self._stopped = True  # 模拟刷课中途被停止
+
+        import functions.deal_mission.deal_course as dc_mod
+        monkeypatch.setattr(dc_mod, "DealCourse", FakeDealCourse)
+
+        ok, _stats, msg = adapter.auto_complete("CID1", "CL1", "first", "CPI1")
+        assert ok is True
+        assert "stopped" in msg
+        # runner 引用已清理
+        assert adapter._current_runner is None
+
+
+# ════════════════════════════════════════════════════════════
 # EngineAdapter.auto_complete 透传测试
 # ════════════════════════════════════════════════════════════
 
@@ -434,6 +616,14 @@ class TestAutoCompletePassthrough:
                 captured["learning_mode"] = learning_mode
                 captured["user_id"] = user_id
                 self.thread_pool = []
+                self._stopped = False
+
+            def request_stop(self):
+                self._stopped = True
+
+            @property
+            def is_stopped(self):
+                return self._stopped
 
             def do_finish(self):
                 captured["do_finish_called"] = True

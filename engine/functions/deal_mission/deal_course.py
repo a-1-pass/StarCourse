@@ -85,6 +85,11 @@ class DealCourse:
 
         self.thread_pool = []
 
+        # ── 停止控制（继承快捷操作的可中断能力） ──
+        # GUI 停止/暂停按钮通过 EngineAdapter.request_stop() 置位此事件；
+        # 各章节循环、任务点处理、视频/直播等待处均有检查点。
+        self._stop_event = threading.Event()
+
         if not self.enable_multi_thread:
             self.single_thread = True
 
@@ -113,6 +118,29 @@ class DealCourse:
             loguru.logger.debug(f"进度 DAO 加载失败: {e}")
             self._progress_dao = None
         return self._progress_dao
+
+    # ── 停止控制（快捷操作可中断能力的继承） ──
+    def request_stop(self):
+        """请求中断刷课流程（GUI 停止/暂停按钮调用，线程安全）。"""
+        self._stop_event.set()
+
+    @property
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
+
+    def _interruptible_sleep(self, seconds: float) -> bool:
+        """可被停止中断的等待。
+
+        :return: True 表示在等待期间被停止；False 表示正常等满
+        """
+        return self._stop_event.wait(timeout=max(0.0, float(seconds or 0.0)))
+
+    def _check_stopped(self, where: str = "") -> bool:
+        """循环检查点：已停止则记录日志并返回 True。"""
+        if self._stop_event.is_set():
+            self.log.warning(f"⏹ 刷课已被停止（{where}）")
+            return True
+        return False
 
     def do_finish(self):
         if not self.course.ifOpen:
@@ -176,6 +204,9 @@ class DealCourse:
 
         self.log.info(f"📊 共 {len(self.mission_list)} 个章节待处理 (模式: {self.learning_mode})")
 
+        if self._check_stopped("开始刷课前"):
+            return
+
         # ── 按模式分派 ──
         if self.learning_mode == self.MODE_STAGE:
             self._do_stage_mode(DealVideo, dao)
@@ -198,6 +229,11 @@ class DealCourse:
         for mission_item in self.mission_list:
             chapter_id = str(mission_item.get('id') or mission_item.get('chapter_id') or "")
             chapter_name = mission_item.get('name', '')
+
+            # 停止检查点（章节之间）
+            if self._check_stopped(f"章节'{chapter_name}'之前"):
+                return
+
             self.log.info(f"开始处理章节'{chapter_name}'（闯关模式）")
 
             processed_object_ids = set()
@@ -205,6 +241,14 @@ class DealCourse:
             chapter_processed_count = 0
 
             while True:
+                # 停止检查点（每轮重拉前）；停止时本章记 partial，下次可续学
+                if self._check_stopped(f"章节'{chapter_name}'重拉"):
+                    if dao and self.user_id:
+                        dao.save_chapter_done(
+                            self.user_id, self.course_id, chapter_id, chapter_name,
+                            task_total=chapter_processed_count, task_done=chapter_processed_count,
+                            status="partial")
+                    return
                 attach_list = self.deal_chapter(mission_item)
                 if attach_list is False:
                     self.log.warning(f"章节'{chapter_name}'未开放，跳过")
@@ -276,6 +320,8 @@ class DealCourse:
         # 预拉取所有章节附件（与原 do_finish 一致）
         temp_mission_list = []
         for mission_item in self.mission_list:
+            if self._check_stopped("预拉取章节附件"):
+                break
             attach_list = self.deal_chapter(mission_item)
             if attach_list:
                 temp_mission_list.append((mission_item, attach_list))
@@ -292,13 +338,24 @@ class DealCourse:
         completed_tasks = 0
 
         for mission_item, attach_list in temp_mission_list:
-            self.log.info(f"开始处理章节'{mission_item.get('name')}'")
+            chapter_id = str(mission_item.get('id') or mission_item.get('chapter_id') or "")
+            chapter_name = mission_item.get('name', '')
+
+            # 停止检查点（章节之间）；sequential 停止时记 partial 供续学
+            if self._check_stopped(f"章节'{chapter_name}'之前"):
+                if (dao and self.user_id
+                        and self.learning_mode == self.MODE_SEQUENTIAL
+                        and not self.chapter_ids):
+                    dao.save_chapter_done(
+                        self.user_id, self.course_id, chapter_id, chapter_name,
+                        task_done=completed_tasks, status="partial")
+                return
+
+            self.log.info(f"开始处理章节'{chapter_name}'")
             if attach_list is False:
                 continue
             if not attach_list:
                 continue
-            chapter_id = str(mission_item.get('id') or mission_item.get('chapter_id') or "")
-            chapter_name = mission_item.get('name', '')
             chapter_failed = False
 
             for attach_item in attach_list:
@@ -306,6 +363,15 @@ class DealCourse:
                 for media in medias:
                     if ignore_passed and media.get("isPassed"):
                         continue
+                    # 停止检查点（任务点之间）
+                    if self._check_stopped(f"章节'{chapter_name}'任务点处理中"):
+                        if (dao and self.user_id
+                                and self.learning_mode == self.MODE_SEQUENTIAL
+                                and not self.chapter_ids):
+                            dao.save_chapter_done(
+                                self.user_id, self.course_id, chapter_id, chapter_name,
+                                task_done=completed_tasks, status="partial")
+                        return
                     ok, name = self._process_media(media, attach_item, mission_item, DealVideo)
                     completed_tasks += 1
                     if not ok:
@@ -351,7 +417,9 @@ class DealCourse:
 
         if is_live_attachment(media):
             _live = Live(media, self.user.headers, defaults, self.course_id)
-            _thread = threading.Thread(target=DealVideo.run_live, args=(_live, self.user, self.log))
+            _thread = threading.Thread(
+                target=DealVideo.run_live,
+                args=(_live, self.user, self.log, self._stop_event))
             if self.single_thread:
                 self.log.info(f"开始处理直播任务点:{_live.name}")
                 self.log.info(f"   模式: 单线程顺序刷取")
@@ -360,39 +428,48 @@ class DealCourse:
             else:
                 self.thread_pool = [t for t in self.thread_pool if t.is_alive()]
                 while len(self.thread_pool) >= self.max_concurrent_threads:
+                    if self.is_stopped:
+                        return False, _live.name
                     self.log.debug(f"   线程池已满 ({len(self.thread_pool)}/{self.max_concurrent_threads})，等待3秒后重试...")
-                    time.sleep(3)
+                    self._interruptible_sleep(3)
                     self.thread_pool = [t for t in self.thread_pool if t.is_alive()]
                 self.thread_pool.append(_thread)
                 self.log.info(f"   模式: 多线程并发刷取 (最大并发: {self.max_concurrent_threads})")
                 self.log.info(f"   已启动直播: '{_live.name}'")
                 _thread.start()
-                time.sleep(random.random() + 0.5)
+                self._interruptible_sleep(random.random() + 0.5)
             return True, _live.name
 
         if media_type == "video":
             if media_module == "insertaudio":
                 self.log.info(f"开始处理音频任务点:{media_name}")
-                finish_status = Video(media, self.user.headers, defaults, "Audio", name=media_name,
-                                      course_id=self.course_id, class_id=self.class_id,
-                                      userid=self.user.uid).do_finish()
+                _audio = Video(media, self.user.headers, defaults, "Audio", name=media_name,
+                               course_id=self.course_id, class_id=self.class_id,
+                               userid=self.user.uid)
+                _audio._stop_event = self._stop_event
+                finish_status = _audio.do_finish()
             else:
                 self.log.info(f"开始处理视频任务点:{media_name}")
                 _video = Video(media, self.user.headers, defaults, name=media_name,
                                course_id=self.course_id, class_id=self.class_id,
                                userid=self.user.uid)
+                _video._stop_event = self._stop_event
                 if self.video_mode == 0:
                     self.log.info(f"   模式: 立即完成")
                     finish_status = _video.do_finish()
                     if not finish_status:
                         self.log.warning(f"   视频模式失败，尝试音频模式...")
-                        finish_status = Video(
+                        _audio_fallback = Video(
                             media, self.user.headers, defaults, "Audio", name=media_name,
                             course_id=self.course_id, class_id=self.class_id,
                             userid=self.user.uid
-                        ).do_finish()
+                        )
+                        _audio_fallback._stop_event = self._stop_event
+                        finish_status = _audio_fallback.do_finish()
                 else:
-                    _thread = threading.Thread(target=DealVideo.run_video, args=(_video, self.user, self.log))
+                    _thread = threading.Thread(
+                        target=DealVideo.run_video,
+                        args=(_video, self.user, self.log, self._stop_event))
                     if self.single_thread:
                         self.log.info(f"   模式: 单线程顺序刷取")
                         _thread.start()
@@ -401,14 +478,16 @@ class DealCourse:
                     else:
                         self.thread_pool = [t for t in self.thread_pool if t.is_alive()]
                         while len(self.thread_pool) >= self.max_concurrent_threads:
+                            if self.is_stopped:
+                                return False, media_name
                             self.log.debug(f"   线程池已满 ({len(self.thread_pool)}/{self.max_concurrent_threads})，等待3秒后重试...")
-                            time.sleep(3)
+                            self._interruptible_sleep(3)
                             self.thread_pool = [t for t in self.thread_pool if t.is_alive()]
                         self.thread_pool.append(_thread)
                         self.log.info(f"   模式: 多线程并发刷取 (最大并发: {self.max_concurrent_threads})")
                         self.log.info(f"   已启动: '{media_name}'")
                         _thread.start()
-                        time.sleep(random.random() + 0.5)
+                        self._interruptible_sleep(random.random() + 0.5)
             return finish_status, media_name
 
         if media_type == "document":
@@ -418,7 +497,9 @@ class DealCourse:
 
         if media_type == "live":
             _live = Live(media, self.user.headers, defaults, self.course_id)
-            _thread = threading.Thread(target=DealVideo.run_live, args=(_live, self.user, self.log))
+            _thread = threading.Thread(
+                target=DealVideo.run_live,
+                args=(_live, self.user, self.log, self._stop_event))
             if self.single_thread:
                 self.log.info(f"开始处理直播任务点:{_live.name}")
                 _thread.start()
@@ -426,11 +507,13 @@ class DealCourse:
             else:
                 self.thread_pool = [t for t in self.thread_pool if t.is_alive()]
                 while len(self.thread_pool) >= self.max_concurrent_threads:
-                    time.sleep(3)
+                    if self.is_stopped:
+                        return False, _live.name
+                    self._interruptible_sleep(3)
                     self.thread_pool = [t for t in self.thread_pool if t.is_alive()]
                 self.thread_pool.append(_thread)
                 _thread.start()
-                time.sleep(random.random() + 0.5)
+                self._interruptible_sleep(random.random() + 0.5)
             return True, _live.name
 
         if property_dict.get("bookname"):

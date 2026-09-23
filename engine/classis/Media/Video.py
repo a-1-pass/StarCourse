@@ -52,6 +52,18 @@ class Video(Media):
         self.class_id = class_id or self.defaults.get("clazzId", "")
         self.userid = userid or self.defaults.get("userid", "")
         self.cpi = self.defaults.get("cpi", "")
+        # 可选停止事件（由刷课引擎注入；None 时行为与历史完全一致）
+        self._stop_event = None
+
+    def _stopped(self) -> bool:
+        return self._stop_event is not None and self._stop_event.is_set()
+
+    def _sleep(self, seconds: float) -> bool:
+        """可中断等待。返回 True 表示被停止中断。"""
+        if self._stop_event is not None:
+            return self._stop_event.wait(timeout=max(0.0, float(seconds or 0.0)))
+        time.sleep(max(0.0, float(seconds or 0.0)))
+        return False
 
     def _resolve_rt(self):
         if self.rt:
@@ -103,7 +115,7 @@ class Video(Media):
             except requests.RequestException as e:
                 last_error = f"第{attempt+1}次请求失败: {e}"
                 if attempt < max_retries - 1:
-                    time.sleep(random.uniform(1, 2))
+                    self._sleep(random.uniform(1, 2))
                     continue
                 loguru.logger.error(f"视频状态请求失败: objectId={self.objectId}, 重试{max_retries}次后仍失败")
                 return None
@@ -111,7 +123,7 @@ class Video(Media):
             if resp.status_code != 200:
                 last_error = f"HTTP {resp.status_code}: {resp.text[:100]}"
                 if attempt < max_retries - 1:
-                    time.sleep(random.uniform(1, 2))
+                    self._sleep(random.uniform(1, 2))
                     continue
                 loguru.logger.error(f"视频状态HTTP错误: {resp.status_code}, objectId={self.objectId}")
                 return None
@@ -124,14 +136,14 @@ class Video(Media):
                 else:
                     last_error = f"status={status_json.get('status')}"
                     if attempt < max_retries - 1:
-                        time.sleep(random.uniform(1, 2))
+                        self._sleep(random.uniform(1, 2))
                         continue
                     loguru.logger.warning(f"视频状态返回非success: {status_json.get('status')}")
                     return status_json
             except json.JSONDecodeError as e:
                 last_error = f"JSON解析失败: {e}, 响应: {resp.text[:200]}"
                 if attempt < max_retries - 1:
-                    time.sleep(random.uniform(1, 2))
+                    self._sleep(random.uniform(1, 2))
                     continue
                 loguru.logger.error(f"视频状态JSON解析失败: {e}, objectId={self.objectId}")
                 return None
@@ -291,6 +303,9 @@ class Video(Media):
             getattr(loguru.logger, level if level != "success" else "success", loguru.logger.info)(msg)
 
     def study(self, all_time: int = 0, log=None) -> bool:
+        if self._stopped():
+            self._log(log, "warning", "视频刷取已被停止")
+            return False
         video_status = self.get_status()
         if not video_status:
             self._log(log, "error", f"视频 '{self.name}' 状态获取失败")
@@ -336,6 +351,9 @@ class Video(Media):
         max_forbidden_retry = 2
 
         while not is_passed:
+            if self._stopped():
+                self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
+                return False
             if play_time - last_log_time >= wait_time or int(play_time) == target_duration:
                 is_passed, state = self._video_progress_log(
                     dtoken, target_duration, int(play_time), _isdrag=3, headers=headers
@@ -348,7 +366,9 @@ class Video(Media):
                     forbidden_retry += 1
                     self._log(log, "warning",
                               f"视频 '{self.name}' 出现403报错, 正在尝试刷新会话状态 (第{forbidden_retry}次)")
-                    time.sleep(random.uniform(2, 4))
+                    if self._sleep(random.uniform(2, 4)):
+                        self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
+                        return False
                     refreshed_meta = self._refresh_video_status(self.dtype)
                     if refreshed_meta:
                         dtoken = refreshed_meta.get("dtoken", dtoken)
@@ -380,7 +400,9 @@ class Video(Media):
             last_iter = time.time()
             play_time = min(target_duration, play_time + dt)
 
-            time.sleep(VIDEO_PROGRESS_INTERVAL)
+            if self._sleep(VIDEO_PROGRESS_INTERVAL):
+                self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
+                return False
 
         self._log(log, "success", f"视频 '{self.name}' 刷取完成！")
         return True

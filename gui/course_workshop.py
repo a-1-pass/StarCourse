@@ -145,7 +145,10 @@ class _AutomationWorker(QThread):
                         user_id=self._user_id,
                     )
                     if ok:
-                        self.log_signal.emit("[完成] 自动化任务执行成功")
+                        if "stopped" in str(msg):
+                            self.log_signal.emit("[停止] 刷课已被用户停止")
+                        else:
+                            self.log_signal.emit("[完成] 自动化任务执行成功")
                         break
                     attempt += 1
                     if attempt <= self._max_retries and self._running:
@@ -163,6 +166,11 @@ class _AutomationWorker(QThread):
 
     def stop(self):
         self._running = False
+        # 中断刷课引擎内部循环（章节/任务点/视频/直播等待处的检查点）
+        try:
+            self._client.request_stop()
+        except Exception:
+            pass
 
 
 class _SignInScanWorker(QThread):
