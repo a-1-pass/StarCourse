@@ -397,7 +397,7 @@ class Tiku(TikuBase):
         cover_rate = self._config.get("cover_rate", 0.8)
         try:
             self.COVER_RATE = float(cover_rate)
-        except:
+        except (TypeError, ValueError):
             self.COVER_RATE = 0.8
 
         return self

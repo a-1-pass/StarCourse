@@ -52,6 +52,9 @@ class DeepSeekAI:
 
     SYSTEM_PROMPT_LETTER = "输出答案字母，如A或AB。"
     SYSTEM_PROMPT_CONTENT = "请直接输出答案内容，不要输出多余的解释。"
+    SYSTEM_PROMPT_SHORTANSWER = """本题为简答题，请根据题目简要回答，以JSON格式输出答案内容。
+示例回答：{"Answer": ["答案内容"]}。
+除此之外不要输出任何多余的内容，也不要使用MD语法。"""
 
     def __init__(self, config_path: str = "ai_config.json"):
         self.config = self.DEFAULT_CONFIG.copy()
