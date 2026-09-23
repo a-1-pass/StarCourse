@@ -76,6 +76,20 @@ class EngineAdapter:
         except Exception:
             return ""
 
+    @property
+    def current_user_id(self) -> str | None:
+        """Return the uid of the logged-in user, or None if not logged in.
+
+        Used by the GUI to key chapter-level progress records
+        (see [engine/course_progress.py](../../engine/course_progress.py)).
+        """
+        if self._user is None:
+            return None
+        try:
+            return getattr(self._user, "uid", None)
+        except Exception:
+            return None
+
     def login_with_cookie(self, cookie: str) -> tuple[bool, str]:
         try:
             from classis.SelfException import LoginException  # type: ignore[import-not-found]
@@ -360,6 +374,8 @@ class EngineAdapter:
         multi_thread: bool = False,
         max_threads: int = 5,
         use_tiku: bool = None,
+        learning_mode: str = "stage",
+        user_id: str | None = None,
     ) -> tuple[bool, dict, str]:
         course = self._find_course(course_id)
         if not course:
@@ -384,12 +400,14 @@ class EngineAdapter:
                 on_progress(f"  Threading:  {'multi (' + str(max_threads) + ' workers)' if multi_thread else 'single'}")
                 on_progress(f"  Strategy:   {strategy}")
                 on_progress(f"  Tiku path:  {'on' if use_tiku is not False else 'off'} (题库/AI 双路径独立)")
+                on_progress(f"  Mode:       {learning_mode}")
                 if chapter_ids:
                     on_progress(f"  Chapters:   {len(chapter_ids)} selected")
                 on_progress("=" * 50)
 
             runner = DealCourse(self._user, course, progress_logger, strategy, ai, chapter_ids,
-                                multi_thread, max_threads, use_tiku=use_tiku)
+                                multi_thread, max_threads, use_tiku=use_tiku,
+                                learning_mode=learning_mode, user_id=user_id)
             runner.do_finish()
 
             # join background video threads

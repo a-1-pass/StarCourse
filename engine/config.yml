@@ -53,6 +53,8 @@ FunConfig:
     notopen-action: retry  # 遇到关闭任务点时的行为: retry-重试, ask-询问, continue-继续
     speed: 1.0  # 视频播放倍速 (默认1.0, 最大2.0)
     jobs: 4  # 同时进行的章节数 (默认4)
+    learning-mode: stage  # 学习模式: stage=闯关(任务点循环重拉+章节门禁) / sequential=顺序 / concurrent=并发 / review=复习
+    progress-persistence: true  # 是否启用章节级进度记忆（重启续学）
   set-log:
     delay: 30 # 刷取学习次数的延迟，单位s
 

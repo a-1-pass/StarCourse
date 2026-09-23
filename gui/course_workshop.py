@@ -102,7 +102,9 @@ class _AutomationWorker(QThread):
 
     def __init__(self, client, course_id, class_id, strategy="first", cpi="",
                  chapter_ids=None, multi_thread=False, max_threads=5, max_retries=2,
-                 use_tiku=None):
+                 use_tiku=None,
+                 learning_mode: str = "stage",
+                 user_id: str = None):
         super().__init__()
         self._client = client
         self._cid = course_id
@@ -114,6 +116,8 @@ class _AutomationWorker(QThread):
         self._max_threads = max_threads
         self._max_retries = max_retries
         self._use_tiku = use_tiku
+        self._learning_mode = learning_mode
+        self._user_id = user_id
         self._running = True
 
     def run(self):
@@ -137,6 +141,8 @@ class _AutomationWorker(QThread):
                         multi_thread=self._multi,
                         max_threads=self._max_threads,
                         use_tiku=self._use_tiku,
+                        learning_mode=self._learning_mode,
+                        user_id=self._user_id,
                     )
                     if ok:
                         self.log_signal.emit("[完成] 自动化任务执行成功")
@@ -754,6 +760,27 @@ class CourseWorkshop(QDialog):
         sgl.addWidget(self._mode_hint)
         self._strategy_cb.currentTextChanged.connect(lambda _: self._refresh_mode_hint())
 
+        # 学习模式选择（闯关 / 顺序 / 并发 / 复习）
+        row_lm = QHBoxLayout()
+        row_lm.addWidget(QLabel("学习模式:"))
+        self._learning_mode_cb = QComboBox()
+        self._learning_mode_cb.addItems(["闯关模式", "顺序学习", "并发学习", "复习模式"])
+        self._learning_mode_cb.setToolTip(
+            "闯关模式：任务点逐个解锁，每完成一个重新拉取章节以刷刚解锁的任务点，\n"
+            "          本章全过才进下一章（学习通主流，默认）\n"
+            "顺序学习：按章节顺序单次遍历，不门禁\n"
+            "并发学习：多线程并发刷取（行为同顺序，并发体现在视频线程池）\n"
+            "复习模式：忽略已完成标记，全部重做一遍"
+        )
+        row_lm.addWidget(self._learning_mode_cb)
+        sgl.addLayout(row_lm)
+
+        # 进度指示器（章节级进度记忆，选中课程后显示续学起点）
+        self._resume_label = QLabel("上次完成：—")
+        self._resume_label.setWordWrap(True)
+        self._resume_label.setStyleSheet("color:#94a3b8;font-size:11px;")
+        sgl.addWidget(self._resume_label)
+
         row_ai = QHBoxLayout()
         self._ai_settings_btn = QPushButton("AI 模型设置…")
         self._ai_settings_btn.setToolTip(
@@ -1249,6 +1276,32 @@ class CourseWorkshop(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, ch.get("chapter_id", ""))
             self._chapter_list.addItem(item)
         self._append_log(f"[完成] {len(chapters)} 个章节")
+        self._refresh_resume_label()
+
+    def _refresh_resume_label(self):
+        """章节列表加载后，查询章节级进度记忆并回写 _resume_label。
+
+        只在未手动勾选章节时显示续学起点（手动勾选优先级最高）。
+        """
+        try:
+            uid = getattr(self._client, "current_user_id", None)
+            course_id = getattr(self._current_course, "course_id", None)
+            if not uid or not course_id or not self._chapters:
+                self._resume_label.setText("上次完成：—")
+                return
+            from course_progress import get_course_progress_dao
+            dao = get_course_progress_dao()
+            resume_id = dao.get_resume_position(uid, course_id)
+            if not resume_id:
+                self._resume_label.setText("上次完成：—（无续学记录）")
+                return
+            for ch in self._chapters:
+                if str(ch.get("chapter_id", "")) == str(resume_id):
+                    self._resume_label.setText(f"上次完成：{ch.get('name', resume_id)}")
+                    return
+            self._resume_label.setText(f"上次完成：{resume_id}")
+        except Exception:
+            self._resume_label.setText("上次完成：—")
 
     def _on_course_double_click(self, row: int, _col: int):
         if row < 0 or row >= len(self._courses):
@@ -1406,11 +1459,14 @@ class CourseWorkshop(QDialog):
         use_tiku = self._use_tiku()
         multi = self._thread_chk.isChecked()
         threads = self._thread_spin.value() if multi else 1
+        learning_mode = self._current_learning_mode()
+        user_id = getattr(self._client, "current_user_id", None) or ""
 
         self._worker = _AutomationWorker(
             self._client, c.course_id, c.class_id,
             strategy, c.cpi, ch_ids, multi, threads, max_retries=2,
             use_tiku=use_tiku,
+            learning_mode=learning_mode, user_id=user_id,
         )
         self._worker.log_signal.connect(self._append_log)
         self._worker.finished.connect(self._on_task_done)
@@ -1427,6 +1483,15 @@ class CourseWorkshop(QDialog):
             "首选答案": "first",
             "随机选择": "random",
         }.get(mode, "first")
+
+    def _current_learning_mode(self) -> str:
+        """UI 学习模式 -> engine 标识符。"""
+        return {
+            "闯关模式": "stage",
+            "顺序学习": "sequential",
+            "并发学习": "concurrent",
+            "复习模式": "review",
+        }.get(self._learning_mode_cb.currentText(), "stage")
 
     def _use_tiku(self) -> bool:
         """当前答题方式是否启用题库路径（题库/AI 两路径独立维护）。"""
