@@ -469,7 +469,8 @@ class DealCourse:
                 else:
                     _thread = threading.Thread(
                         target=DealVideo.run_video,
-                        args=(_video, self.user, self.log, self._stop_event))
+                        args=(_video, self.user, self.log),
+                        kwargs={"stop_event": self._stop_event})
                     if self.single_thread:
                         self.log.info(f"   模式: 单线程顺序刷取")
                         _thread.start()
