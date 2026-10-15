@@ -536,3 +536,105 @@ class TestBuildMultiClient:
     def test_empty_config_returns_none(self):
         assert build_multi_client({}, cache=FakeCache()) is None
         assert build_multi_client({"priority": []}, cache=FakeCache()) is None
+
+
+# ─────────────────────────────────────────────────────────
+# 8. 答题准确性回归（prompt 构造 / 字母提取 / 内容映射 / 判断题）
+# ─────────────────────────────────────────────────────────
+
+class TestAnswerAccuracy:
+    def _provider(self):
+        return GPTProvider({"api_key": "sk-1234567890"}, cache=FakeCache())
+
+    def test_build_prompt_options_on_separate_lines(self):
+        p = self._provider()
+        prompt = p._build_prompt("题干", ["甲", "乙"], is_multi=False)
+        assert prompt == "题干\nA. 甲\nB. 乙"
+
+    def test_extract_letter_from_sentence(self):
+        p = self._provider()
+        assert p._extract_letter("The answer is B", 4) == "B"
+
+    def test_extract_letter_out_of_range(self):
+        p = self._provider()
+        assert p._extract_letter("H", 4) == ""
+
+    def test_extract_letter_ignores_word_internal(self):
+        p = self._provider()
+        # “ANSWER” 中的 A/E 不得视为答案；取独立字母 B
+        assert p._extract_letter("ANSWER: B", 4) == "B"
+
+    def test_extract_letters_from_sentence(self):
+        p = self._provider()
+        assert p._extract_letters("ANSWER: BC", 4) == "BC"
+
+    def test_extract_letters_pure_string(self):
+        p = self._provider()
+        assert p._extract_letters("acd", 4) == "ACD"
+
+    def test_true_false_maps_a_to_true(self):
+        p = self._provider()
+        p._session.post = MagicMock(return_value=make_resp(200, CHOICES("A")))
+        assert p.answer_question({"question_type": "judgement", "title": "1+1=2"}) == "true"
+
+    def test_true_false_maps_b_to_false(self):
+        p = self._provider()
+        p._session.post = MagicMock(return_value=make_resp(200, CHOICES("B")))
+        assert p.answer_question({"question_type": "judgement", "title": "1+1=3"}) == "false"
+
+    def test_content_letter_response_mapped_to_option_text(self):
+        """模型违反指令输出纯字母时，映射回选项内容（缓存乱序安全）。"""
+        p = self._provider()
+        p._session.post = MagicMock(
+            return_value=make_resp(200, CHOICES('{"Answer": ["B"]}'))
+        )
+        result = p.answer_question_content({
+            "question_type": "single", "title": "题干",
+            "options": ["选项甲", "选项乙", "选项丙", "选项丁"],
+        })
+        assert result == ["选项乙"]
+
+    def test_content_letter_out_of_range_not_cached(self):
+        """越界字母 ⇒ result=None（不落入纯文本兜底返回 JSON 原文）且不写缓存。
+
+        场景刻意用 ["B", "Z"]：前面已有有效字母，仍应整体放弃——
+        越界字母表明该次响应不可信，保留部分映射有答错风险。
+        """
+        p = self._provider()
+        p._session.post = MagicMock(
+            return_value=make_resp(200, CHOICES('{"Answer": ["B", "Z"]}'))
+        )
+        result = p.answer_question_content({
+            "question_type": "multiple", "title": "题干",
+            "options": ["选项甲", "选项乙", "选项丙", "选项丁"],
+        })
+        assert result is None
+        assert p._cache.items == {}
+
+    def test_content_cache_key_order_insensitive(self):
+        """内容答案与选项顺序无关：乱序选项应命中同一缓存。"""
+        p = self._provider()
+        p._session.post = MagicMock(
+            return_value=make_resp(200, CHOICES('{"Answer": ["选项甲"]}'))
+        )
+        q1 = {"question_type": "single", "title": "题干",
+              "options": ["选项甲", "选项乙"]}
+        assert p.answer_question_content(q1) == ["选项甲"]
+        # 选项乱序后直接命中缓存，不再发请求
+        p._session.post = MagicMock(side_effect=AssertionError("不应再请求"))
+        q2 = {"question_type": "single", "title": "题干",
+              "options": ["选项乙", "选项甲"]}
+        assert p.answer_question_content(q2) == ["选项甲"]
+
+    def test_letter_cache_key_order_sensitive(self):
+        """字母答案与选项顺序相关：乱序选项不得命中旧缓存。"""
+        p = self._provider()
+        p._session.post = MagicMock(return_value=make_resp(200, CHOICES("A")))
+        q1 = {"question_type": "single", "title": "题干2",
+              "options": ["甲", "乙"]}
+        assert p.answer_question(q1) == "A"
+        q2 = {"question_type": "single", "title": "题干2",
+              "options": ["乙", "甲"]}
+        p._session.post = MagicMock(return_value=make_resp(200, CHOICES("B")))
+        assert p.answer_question(q2) == "B"
+        assert p._session.post.called

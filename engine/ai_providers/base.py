@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -233,7 +234,7 @@ class AIProviderBase(ABC):
             return self._do_chat(
                 system_prompt,
                 prompt,
-                int(self.config.get("max_tokens_content", 512)),
+                int(self.config.get("max_tokens_content", 1024)),
                 float(self.config.get("temperature", 0.0)),
             )
         except AIProviderError as e:
@@ -256,7 +257,9 @@ class AIProviderBase(ABC):
         if not title:
             return None
 
-        cache_key = f"{q_type}:{title}:{','.join(options) if isinstance(options, list) else options}"
+        # v2 缓存键：旧版缓存可能含有错误/垃圾答案，直接废弃不复用；
+        # 字母答案与选项顺序强相关（超星选项乱序），键保持原始顺序防错配
+        cache_key = f"v2:{q_type}:{title}:{','.join(options) if isinstance(options, list) else options}"
         cached = self._cache.get_cache(cache_key)
         if cached:
             return cached
@@ -294,10 +297,12 @@ class AIProviderBase(ABC):
         except (TypeError, ValueError):
             blank_count = 0
 
-        cache_key = (
-            f"content:{q_type}:{blank_count}:{title}:"
-            f"{','.join(options) if isinstance(options, list) else options}"
+        # 内容答案与选项顺序无关，键内选项排序后相同题目乱序也能命中
+        opt_key = (
+            ",".join(sorted(str(o) for o in options))
+            if isinstance(options, list) else str(options)
         )
+        cache_key = f"v2:content:{q_type}:{blank_count}:{title}:{opt_key}"
         cached = self._cache.get_cache(cache_key)
         if cached:
             try:
@@ -382,6 +387,25 @@ class AIProviderBase(ABC):
             answers = parsed.get("Answer", [])
             if answers:
                 result = [str(a).strip() for a in answers if a]
+                # 模型未按指令输出内容而直接输出字母（如 ["B"] / ["A","C"]）时，
+                # 将字母映射回选项内容，保证内容匹配链路可用且缓存乱序安全；
+                # 出现越界字母说明本次响应整体不可信（哪怕前面已有有效字母），
+                # 直接返回 None 交由调用方回退字母接口，不落入下方纯文本兜底
+                if result and options and isinstance(options, list):
+                    mapped = []
+                    valid = True
+                    for item in result:
+                        if re.fullmatch(r"[A-Za-z]", item):
+                            idx = ord(item.upper()) - 65
+                            if 0 <= idx < len(options):
+                                mapped.append(self._clean_text(str(options[idx])))
+                                continue
+                            valid = False
+                            break
+                        mapped.append(item)
+                    if not valid:
+                        return None
+                    result = mapped
                 if result:
                     self._cache.add_cache(
                         cache_key, json.dumps(result, ensure_ascii=False)
@@ -403,23 +427,23 @@ class AIProviderBase(ABC):
             return None
         prompt = self._build_prompt(title, options, False)
         response = self._call_api_letter(prompt)
-        letter = self._extract_letter(response) if response else None
+        letter = self._extract_letter(response, len(options)) if response else ""
         logger.debug(f"[{self.provider_name}] 单选题: response={response}, letter={letter}")
-        return letter
+        return letter or None
 
     def _answer_multiple(self, title: str, options: list) -> Optional[str]:
         if not options:
             return None
         prompt = self._build_prompt(title, options, True)
         response = self._call_api_letter(prompt)
-        letters = self._extract_letters(response) if response else None
+        letters = self._extract_letters(response, len(options)) if response else ""
         logger.debug(f"[{self.provider_name}] 多选题: response={response}, letters={letters}")
-        return letters if letters else None
+        return letters or None
 
     def _answer_true_false(self, title: str) -> Optional[str]:
-        prompt = self._clean_text(title) + "\nA对B错"
+        prompt = f"请判断下列说法是否正确（正确输出A，错误输出B）：\n{self._clean_text(title)}"
         response = self._call_api_letter(prompt)
-        letter = self._extract_letter(response) if response else None
+        letter = self._extract_letter(response, 2) if response else ""
         logger.debug(f"[{self.provider_name}] 判断题: response={response}, letter={letter}")
         if letter == "A":
             return "true"
@@ -459,9 +483,9 @@ class AIProviderBase(ABC):
     def _build_prompt(self, title: str, options: list, is_multi: bool) -> str:
         clean_title = self._clean_text(title)
         opt_lines = [
-            f"{chr(65 + i)}{self._clean_text(opt)}" for i, opt in enumerate(options)
+            f"{chr(65 + i)}. {self._clean_text(opt)}" for i, opt in enumerate(options)
         ]
-        return clean_title + "\n" + "".join(opt_lines)
+        return clean_title + "\n" + "\n".join(opt_lines)
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -477,18 +501,40 @@ class AIProviderBase(ABC):
         text = re.sub(r'^答案[：:]\s*', '', text)
         return text.strip()
 
-    def _extract_letter(self, response: str) -> str:
-        for c in str(response).upper():
-            if c in "ABCDEFGHIJK":
-                return c
-        return ""
+    def _extract_letter(self, response: str, options_count: int = 0) -> str:
+        """从模型响应中提取单选/判断题的答案字母。
 
-    def _extract_letters(self, response: str) -> str:
-        letters = []
-        for c in str(response).upper():
-            if c in "ABCDEFGHIJK" and c not in letters:
-                letters.append(c)
-        return "".join(sorted(letters)) if letters else ""
+        - ``options_count`` 给出时，只接受选项范围内的字母；
+        - 英文单词内部的字母（如 ANSWER 中的 A）不视为答案。
+        """
+        text = str(response).strip().upper()
+        # options_count<=0 表示未知选项数，放宽到 A-K
+        max_letter = chr(64 + min(options_count, 10)) if options_count > 0 else "K"
+        # 纯字母响应（模型按指令直接输出，如 "A"）
+        if re.fullmatch(r'[A-Z]{1,5}', text):
+            valid = [c for c in text if c <= max_letter]
+            return valid[0] if valid else ""
+        # 独立字母（前后均非英文字母），结论通常在后，取最后一个
+        found = re.findall(
+            r'(?<![A-Za-z])([A-' + max_letter + r'])(?![A-Za-z])', text
+        )
+        return found[-1] if found else ""
+
+    def _extract_letters(self, response: str, options_count: int = 0) -> str:
+        """从模型响应中提取多选题答案字母，去重、排序并限定选项范围。"""
+        text = str(response).strip().upper()
+        max_letter = chr(64 + min(options_count, 10)) if options_count > 0 else "K"
+        # 纯字母串响应（如 "ABC"）
+        if re.fullmatch(r'[A-Z]{1,10}', text):
+            letters = sorted({c for c in text if c <= max_letter})
+            return "".join(letters)
+        # 独立字母或字母组（前后均非英文字母；字母组如 "答案：BC" 拆分为单字母）
+        found = []
+        for token in re.findall(
+            r'(?<![A-Za-z])([A-' + max_letter + r']{1,10})(?![A-Za-z])', text
+        ):
+            found.extend(token)
+        return "".join(sorted(set(found))) if found else ""
 
     # ─────────────────────────────────────────────────────
     # 缓存辅助

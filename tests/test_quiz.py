@@ -129,3 +129,109 @@ class TestGenerateAnswers:
         answers = result["answers"]
         assert answers["answer9001"] != ""
         assert answers["answer9002"] == "true"
+
+
+CHOICE_PAGE = """
+<html><body><form>
+  <div class="singleQuesId" data="8001">
+    <div class="TiMu" data="0">
+      <div class="Zy_TItle">1. 下列说法正确的是？</div>
+    </div>
+    <ul>
+      <li><input type="radio" name="answer8001" value="0"/>B 运动后选择</li>
+      <li><input type="radio" name="answer8001" value="1"/>静息时</li>
+    </ul>
+  </div>
+</form></body></html>
+"""
+
+
+class TestOptionTextCleaning:
+    def _quiz(self):
+        attachment = {
+            "jobid": "work-2", "enc": "e",
+            "property": {"workid": "work-2", "title": "测验"},
+        }
+        quiz = Quiz(attachment, {"Cookie": "k=v"}, {}, "1001", strategy="first")
+        html = etree.HTML(CHOICE_PAGE)
+        quiz.questions = html.xpath("//div[contains(@class, 'singleQuesId')]")
+        return quiz
+
+    def test_leading_letter_and_trailing_xuanze_stripped(self):
+        quiz = self._quiz()
+        info = quiz._extract_question_info(quiz.questions[0], 0)
+        # “B 运动后选择” -> 去前导字母、去尾部“选择”
+        assert info["options"][0]["text"] == "运动后"
+        assert info["options"][1]["text"] == "静息时"
+
+
+class _StubAI:
+    def __init__(self, content=None, letter=None):
+        self._content, self._letter = content, letter
+
+    def is_configured(self):
+        return True
+
+    def answer_question_content(self, question):
+        return self._content
+
+    def answer_question(self, question):
+        return self._letter
+
+
+def _tf_qinfo():
+    return {
+        'title': '测试判断题', 'question_type': '判断题',
+        'options': [
+            {'letter': 'A', 'text': '对', 'value': 'true', 'name': 'answer1'},
+            {'letter': 'B', 'text': '错', 'value': 'false', 'name': 'answer1'},
+        ],
+    }
+
+
+class TestTrueFalseMapping:
+    def test_map_text(self):
+        quiz = make_quiz()
+        assert quiz._map_true_false_text(["正确"]) == "true"
+        assert quiz._map_true_false_text(["对"]) == "true"
+        assert quiz._map_true_false_text(["true"]) == "true"
+        assert quiz._map_true_false_text(["错误"]) == "false"
+        assert quiz._map_true_false_text(["不正确"]) == "false"
+        assert quiz._map_true_false_text(["false"]) == "false"
+        assert quiz._map_true_false_text(["无法判断"]) == ""
+
+    def test_ai_content_wrong_selects_false(self):
+        quiz = make_quiz()
+        quiz._ai_client = _StubAI(content=["错误"])
+        selected = quiz._select_by_ai(_tf_qinfo())
+        assert selected == {"answer1": "false"}
+
+    def test_ai_letter_true_selects_true(self):
+        quiz = make_quiz()
+        quiz._ai_client = _StubAI(letter="true")
+        selected = quiz._select_by_ai(_tf_qinfo())
+        assert selected == {"answer1": "true"}
+
+
+class TestAILetterFallback:
+    def _qinfo(self):
+        return {
+            'title': '测试单选', 'question_type': '单选题',
+            'options': [
+                {'letter': L, 'text': f'选项{L}', 'value': L, 'name': 'answer2'}
+                for L in 'ABCD'
+            ],
+        }
+
+    def test_sentence_answer_only_matches_standalone_letter(self):
+        """“The answer is B” 中仅 B 被选中（A 不得被单词内字母误命中）。"""
+        quiz = make_quiz()
+        quiz._ai_client = _StubAI(letter="The answer is B")
+        selected = quiz._select_by_ai(self._qinfo())
+        assert selected == {"answer2": "B"}
+
+    def test_pure_letter_string(self):
+        quiz = make_quiz()
+        quiz._ai_client = _StubAI(letter="C")
+        selected = quiz._select_by_ai(self._qinfo())
+        assert selected == {"answer2": "C"}

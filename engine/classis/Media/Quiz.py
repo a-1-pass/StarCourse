@@ -459,6 +459,9 @@ class Quiz(Media):
                     if label:
                         option_text = ''.join(label).strip()
 
+                option_text = re.sub(r'^[A-Za-z]\s*[.、:：]?\s*', '', option_text)
+                option_text = re.sub(r'\s*选择\s*$', '', option_text)
+
                 if idx == 0 and len(input_elems) == 2:
                     opt_lower = option_text.lower()
                     if opt_lower in ['对', '正确', 'true', '是', '√'] or '对' in option_text:
@@ -563,6 +566,25 @@ class Quiz(Media):
             elif text_inputs:
                 answers[text_inputs[0]['name']] = answer
 
+    def _map_true_false_text(self, answers: list) -> str:
+        """把判断题的文本答案映射为 "true"/"false"；无法判断返回空串。"""
+        if not answers:
+            return ""
+        for ans in answers:
+            if not isinstance(ans, str):
+                ans = str(ans)
+            norm = ans.strip().lower()
+            if not norm:
+                continue
+            # 显式否定优先（“不正确”含“正确”，必须先判否）
+            if ('错误' in norm or norm.startswith('错') or 'false' in norm
+                    or norm in ('否', 'no', '×')
+                    or '不正确' in norm or '不对' in norm):
+                return "false"
+            if '正确' in norm or norm.startswith('对') or 'true' in norm or norm in ('是', 'yes', '√'):
+                return "true"
+        return ""
+
     def _select_by_ai(self, q_info: dict) -> dict:
         if not self._ai_client or not self._ai_client.is_configured():
             loguru.logger.warning(f"      [AI模式] AI客户端未配置，跳过AI答题")
@@ -591,6 +613,16 @@ class Quiz(Media):
 
                 if ai_res_list and isinstance(ai_res_list, list):
                     loguru.logger.info(f"      [AI模式] AI返回内容: {ai_res_list}")
+
+                    # 判断题：内容答案（正确/错误/true/false 等）无法与
+                    # “对/错”选项文本做子序列匹配，直接映射为 true/false 走专用选择逻辑
+                    if q_info['question_type'] == '判断题':
+                        tf = self._map_true_false_text(ai_res_list)
+                        if tf:
+                            tf_selected = self._select_by_answer_letters(q_info, tf)
+                            if tf_selected:
+                                loguru.logger.info(f"      [AI模式] 判断题内容映射: {tf}")
+                                return tf_selected
 
                     for ans_content in ai_res_list:
                         ans_cleaned = _clean_res([ans_content])[0] if ans_content else ""
@@ -632,8 +664,28 @@ class Quiz(Media):
 
         loguru.logger.info(f"      [AI模式] AI返回字母: '{ai_answer}'")
 
+        # 判断题：字母接口可能返回 true/false（或正确/错误文本），走映射选择
+        if q_info['question_type'] == '判断题':
+            tf = self._map_true_false_text([ai_answer])
+            if tf:
+                tf_selected = self._select_by_answer_letters(q_info, tf)
+                if tf_selected:
+                    loguru.logger.info(f"      [AI模式] 判断题映射: {tf}")
+                    return tf_selected
+
+        # 字母提取：仅接受独立字母（避免 "ANSWER" 等词中的字母误匹配），
+        # 且必须落在当前题目的选项字母集合内
+        valid_letters = {opt['letter'] for opt in q_info['options']}
+        answer_upper = ai_answer.upper()
+        extracted = [c for c in re.findall(r'(?<![A-Za-z])([A-Z])(?![A-Za-z])', answer_upper)
+                     if c in valid_letters]
+        if not extracted and re.fullmatch(r'[A-Z]{1,10}', answer_upper.strip()):
+            extracted = [c for c in answer_upper.strip() if c in valid_letters]
+        if q_info['question_type'] != '多选题' and extracted:
+            extracted = extracted[-1:]
+
         for opt in q_info['options']:
-            if opt['letter'] in ai_answer.upper():
+            if opt['letter'] in extracted:
                 selected[opt['name']] = opt['value']
                 selected_letters.append(f"{opt['letter']} ({opt['text'][:20]})")
 

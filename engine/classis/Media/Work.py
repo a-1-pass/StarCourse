@@ -200,76 +200,20 @@ class Work(Media):
 
     # ── AI 客户端 ────────────────────────────────────────
 
-    def _get_ai_provider_from_config(self) -> str:
-        """从配置文件读取默认 AI 提供商"""
-        try:
-            import json
-            import os
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            engine_dir = os.path.dirname(os.path.dirname(current_dir))
-            src_dir = os.path.dirname(engine_dir)
-            project_dir = os.path.dirname(src_dir)
-            config_paths = [
-                "config.json",
-                os.path.join(project_dir, "config.json"),
-                os.path.join(src_dir, "config.json"),
-                os.path.join(engine_dir, "config.json"),
-            ]
-            for p in config_paths:
-                if p and os.path.exists(p):
-                    with open(p, 'r', encoding='utf-8') as f:
-                        cfg = json.load(f)
-                        return cfg.get("default_provider", "deepseek")
-        except Exception:
-            pass
-        return "deepseek"
-
     def _get_ai_client(self):
         if self._ai_client is not None:
             return self._ai_client
 
-        # 优先：多模型统一架构（DeepSeek/GPT/Claude/文心/StepFun，按优先级容灾）
+        # 统一走多模型架构（DeepSeek/GPT/Claude/文心，按优先级容灾）；
+        # 无有效配置时返回 None（历史 DeepSeekAI/StepFunAI 旧实现含答案提取
+        # 缺陷且不再维护，禁止回退，避免静默降低答题准确率）
         try:
             from ai_providers import build_multi_client
             multi = build_multi_client()
             if multi is not None:
                 self._ai_client = multi
-                return self._ai_client
         except Exception as e:
             loguru.logger.debug(f"多模型客户端加载失败: {e}")
-
-        provider = self._get_ai_provider_from_config()
-
-        if provider == "stepfun":
-            try:
-                from src.stepfun_ai import StepFunAI
-                client = StepFunAI()
-                if client.is_configured():
-                    self._ai_client = client
-                    return self._ai_client
-            except Exception as e:
-                loguru.logger.debug(f"StepFun AI 加载失败: {e}")
-            try:
-                from stepfun_ai import StepFunAI
-                client = StepFunAI()
-                if client.is_configured():
-                    self._ai_client = client
-                    return self._ai_client
-            except Exception as e:
-                loguru.logger.debug(f"StepFun AI (engine) load failed: {e}")
-
-        try:
-            from deepseek_ai_enhanced import DeepSeekAI
-            self._ai_client = DeepSeekAI()
-            return self._ai_client
-        except Exception as e:
-            loguru.logger.debug(f"增强版AI加载失败: {e}")
-        if self._ai_client is None:
-            try:
-                from src.ai_assistant import DeepSeekAI
-                self._ai_client = DeepSeekAI()
-            except Exception:
-                pass
         return self._ai_client
 
     # ── 题目获取 — adapted from reference implementation
@@ -875,7 +819,7 @@ class Work(Media):
                             })
                             loguru.logger.debug(f"      [AI内容] 返回: {ai_res_list}")
                             if ai_res_list:
-                                ans_text = str(ai_res_list[0]) if isinstance(ai_res_list, list) else str(ai_res_list)
+                                ans_text = "\n".join(str(x) for x in ai_res_list) if isinstance(ai_res_list, list) else str(ai_res_list)
                                 loguru.logger.debug(f"      [AI内容] 待匹配答案: {ans_text[:100]}")
                                 matched = self._match_answer(q_type, ans_text, q_options)
                                 loguru.logger.debug(f"      [AI内容] 匹配结果: {matched}")
