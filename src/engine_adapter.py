@@ -215,6 +215,25 @@ class EngineAdapter:
             log.error(f"Read task error: {exc}")
             return False
 
+    def run_hyperlink_task(self, task: dict, course_id: str = "") -> bool:
+        try:
+            from classis.Media.Hyperlink import Hyperlink  # type: ignore[import-not-found]
+            attachment = task.get("attachment", {})
+            props = attachment.get("property", {})
+            title = props.get("name", props.get("title", "unknown"))
+
+            if task.get("is_passed"):
+                log.info("Hyperlink task already complete — skipping")
+                return True
+
+            hyperlink = Hyperlink(attachment, self._user.headers)
+            ok = hyperlink.do_finish()
+            log.info(f"Hyperlink '{title}': {'done' if ok else 'failed'}")
+            return ok
+        except Exception as exc:
+            log.error(f"Hyperlink task error: {exc}")
+            return False
+
     def run_video_task(self, task: dict) -> bool:
         try:
             from classis.Media.Video import Video  # type: ignore[import-not-found]
@@ -795,9 +814,15 @@ class EngineAdapter:
             entry["task_type"] = "document"
         elif task_type in ("bbs", "discuss", "topic", "hwork") or props.get("module", "") in ("bbs", "discuss", "topic"):
             entry["task_type"] = "bbs"
+        elif (task_type in ("hyperlink", "link", "outerlink")
+              or props.get("module", "") in ("hyperlink", "link", "outerlink")
+              or props.get("url") or att.get("url")):
+            entry["task_type"] = "hyperlink"
         elif props.get("bookname"):
             entry["task_type"] = "book"
         else:
+            # 未识别类型：打印完整附件字段，便于实测取字段后补充分类
+            log.info(f"未识别的任务点附件（task_type={task_type}, module={props.get('module','')}）: {att}")
             entry["task_type"] = "other"
         return entry
 
@@ -810,7 +835,9 @@ class EngineAdapter:
             # 历史 DeepSeekAI 旧实现含答案提取缺陷且不再维护，禁止回退
             from ai_providers import build_multi_client  # type: ignore[import-not-found]
             return build_multi_client()
-        except Exception:
+        except Exception as e:
+            # 仅异常路径告警（未配置时 build_multi_client 正常返回 None，属预期）
+            log.warning(f"多模型 AI 客户端加载失败，AI 答题不可用: {e}")
             return None
 
     def _get_tiku(self):

@@ -14,8 +14,20 @@ class CacheDAO:
 
     DEFAULT_CACHE_FILE = "ai_answer_cache.json"
 
+    @staticmethod
+    def _default_cache_path() -> "Path":
+        """默认缓存文件路径：frozen 时落用户数据目录，开发期保持 engine 目录。"""
+        try:
+            from runtime_paths import is_frozen, user_data_dir
+            if is_frozen():
+                return Path(os.path.join(user_data_dir(), CacheDAO.DEFAULT_CACHE_FILE))
+        except Exception:
+            pass
+        return Path(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), CacheDAO.DEFAULT_CACHE_FILE))
+
     def __init__(self, file: str = None):
-        self.cache_file = Path(file) if file else Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), self.DEFAULT_CACHE_FILE))
+        self.cache_file = Path(file) if file else self._default_cache_path()
         self._lock = threading.RLock()
         if not self.cache_file.is_file():
             self._write_cache({})

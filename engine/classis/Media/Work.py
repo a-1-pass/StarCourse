@@ -175,7 +175,7 @@ class Work(Media):
     def __init__(self, attachment: dict, headers, defaults: dict, courseId: str,
                  strategy: str = "first", ai_client=None, tiku=None,
                  clazzId: str = "", userid: str = "", ktoken: str = "",
-                 knowledgeid: str = "", cpi: str = ""):
+                 knowledgeid: str = "", cpi: str = "", stop_event=None):
         super().__init__(attachment, headers)
         self.defaults = defaults or {}
         self.courseId = courseId
@@ -197,6 +197,50 @@ class Work(Media):
         self.cpi = cpi or self.defaults.get("cpi", "") or attachment.get("cpi", "")
 
         self._session = None
+        # 可中断事件（用于穷举提交间隔等待），默认 None 表示不可中断
+        self._stop_event = stop_event
+        # 字体反混淆 / 视觉OCR（可插拔，config.yml 默认关闭；None=未启用，路径与现状一致）
+        self._font_decoder = None
+        self._vision_ocr = None
+
+    # ── 字体反混淆 / 视觉OCR（可插拔，默认关闭） ─────────────
+
+    def _prepare_text_helpers(self, page_html: str):
+        """按配置开关初始化字体解码器与视觉OCR；关闭或失败时保持 None。"""
+        try:
+            from font_decode import build_decoder_from_page
+            decoder = build_decoder_from_page(page_html)
+            if decoder is not None:
+                self._font_decoder = decoder
+        except Exception as e:
+            loguru.logger.debug(f"字体反混淆预处理失败: {e}")
+        try:
+            from vision_ocr import build_ocr_from_config
+            ocr = build_ocr_from_config(client=self._get_ai_client())
+            if ocr is not None:
+                self._vision_ocr = ocr
+        except Exception as e:
+            loguru.logger.debug(f"视觉OCR初始化失败: {e}")
+
+    def _decode_text(self, text: str) -> str:
+        """字体反混淆解码；未启用/失败时原样返回（零行为变化）。"""
+        if self._font_decoder is None or not text:
+            return text
+        try:
+            return self._font_decoder.decode(text)
+        except Exception:
+            return text
+
+    def _ocr_text(self, text: str) -> str:
+        """把文本中的 <img> 图片OCR成文字拼回原文；未启用/无图时原样返回。"""
+        if self._vision_ocr is None or not text:
+            return text
+        try:
+            from vision_ocr import ocr_images_in_text
+            return ocr_images_in_text(text, self._vision_ocr, headers=self.headers)
+        except Exception as e:
+            loguru.logger.debug(f"图片OCR失败（已跳过）: {e}")
+            return text
 
     # ── AI 客户端 ────────────────────────────────────────
 
@@ -259,6 +303,9 @@ class Work(Media):
 
                 if not resp:
                     continue
+
+                # 字体反混淆 / 视觉OCR 预处理（默认关闭，关闭时零行为变化）
+                self._prepare_text_helpers(resp)
                 if '教师未创建完成该测验' in resp:
                     loguru.logger.warning("教师未创建完成该测验，跳过")
                     return None
@@ -343,6 +390,9 @@ class Work(Media):
                 resp = doGet(url=home_url, headers=self.headers)
                 if not resp:
                     continue
+
+                # 字体反混淆 / 视觉OCR 预处理（默认关闭，关闭时零行为变化）
+                self._prepare_text_helpers(resp)
                 if "没有可处理的题目" in resp:
                     return None
                 if "已完成" in resp:
@@ -613,7 +663,12 @@ class Work(Media):
 
     # ── 提交 — adapted from reference implementation
 
-    def _submit_answers(self, questions_data: dict) -> bool:
+    def _submit_raw(self, questions_data: dict) -> tuple[bool, str]:
+        """提交表单，返回 (是否请求成功, 平台返回文案)。
+
+        与 ``_submit_answers`` 的区别仅在于额外回传平台文案，供穷举引擎
+        判断「被拒/通过」；两者共用同一段请求逻辑。
+        """
         submit_data = dict(questions_data)
         if "questions" in submit_data:
             del submit_data["questions"]
@@ -632,7 +687,7 @@ class Work(Media):
 
         if answer_count == 0:
             loguru.logger.warning("没有答案要提交")
-            return False
+            return False, ""
 
         # 打印前3道题的答案用于调试
         debug_count = 0
@@ -692,22 +747,193 @@ class Work(Media):
                 result = resp.json()
                 loguru.logger.debug(f"提交结果: {json.dumps(result, ensure_ascii=False)}")
 
+                msg = str(result.get("msg", "") or result.get("message", "") or "")
                 if result.get("status"):
-                    loguru.logger.info(f"提交成功 -> {result.get('msg', '')}")
-                    return True
+                    loguru.logger.info(f"提交成功 -> {msg}")
+                    return True, msg
                 else:
-                    msg = result.get('msg', '')
                     loguru.logger.error(f"提交失败 -> {msg}")
                     if "无效的参数" in msg or "code-2" in msg:
                         continue
-                    return False
+                    return False, msg
 
             except Exception as e:
                 loguru.logger.warning(f"提交异常 ({submit_url}): {e}")
                 continue
 
         loguru.logger.error("所有提交域名都失败了")
+        return False, ""
+
+    def _submit_answers(self, questions_data: dict) -> bool:
+        # 保持原有签名与返回值不变，等价于只提交一次现有答案
+        return self._submit_raw(questions_data)[0]
+
+    def _build_submit_payload(self, questions_data: dict, answers: dict | None = None) -> dict:
+        """组建扁平化提交表单：剔除 questions 键，写入 answer{q_id}/answertype{q_id}。
+
+        - ``answers is None``：保持原有行为（pyFlag=="1" 时按 answerSource 白名单置空）；
+        - 传入 ``answers``（穷举路径）：用 ``answers.get(q_id, 原值)`` 覆盖 answer{q_id}，
+          并强制清空 pyFlag，避免平台置空逻辑清掉我们主动提交的候选答案。
+        """
+        payload = dict(questions_data)
+        payload.pop("questions", None)
+
+        for q in questions_data.get("questions", []):
+            q_id = q.get("id", "")
+            af = q.get("answerField", {}) or {}
+            ans = af.get(f"answer{q_id}", "")
+            atype = af.get(f"answertype{q_id}", "0")
+
+            if answers is None:
+                if questions_data.get("pyFlag", "") == "1":
+                    src = q.get(f"answerSource{q_id}", "")
+                    if src not in ("cover", "tiku", "ai", "ai_content"):
+                        ans = ""
+            else:
+                ans = answers.get(q_id, ans)
+
+            payload[f"answer{q_id}"] = ans
+            payload[f"answertype{q_id}"] = atype
+
+        if answers is not None:
+            payload["pyFlag"] = ""
+
+        return payload
+
+    def get_status(self) -> dict:
+        """查询作业是否已完成，返回 {"completed": bool}。"""
+        work_urls = [
+            f"https://mooc1-1.chaoxing.com/mooc-ans/work/doHomeWorkNew?courseId={self.courseId}&workId={self.workid}&jobid={self.jobid}",
+            f"https://mooc1-2.chaoxing.com/mooc-ans/work/doHomeWorkNew?courseId={self.courseId}&workId={self.workid}&jobid={self.jobid}",
+            f"https://mooc1.chaoxing.com/mooc-ans/work/doHomeWorkNew?courseId={self.courseId}&workId={self.workid}&jobid={self.jobid}",
+        ]
+        for url in work_urls:
+            try:
+                response = doGet(url=url, headers=self.headers)
+                if not response:
+                    continue
+                # 复用与 Quiz 相同的文案判定
+                if "没有可处理的题目" in response or "已完成" in response:
+                    loguru.logger.debug(f"作业状态: 已完成 ({url})")
+                    return {"completed": True}
+            except Exception as e:
+                loguru.logger.debug(f"获取作业状态失败: {e}")
+                continue
+        return {"completed": False}
+
+    def _check_passed(self) -> bool:
+        """穷举通过判定：优先查询作业状态，兜底复查题目是否已无。"""
+        try:
+            if self.get_status().get("completed"):
+                return True
+        except Exception as e:
+            loguru.logger.debug(f"作业完成判定失败: {e}")
+        try:
+            data = self._fetch_questions_from_api()
+            if not data or not data.get("questions"):
+                return True
+        except Exception as e:
+            loguru.logger.debug(f"作业题目复查失败: {e}")
         return False
+
+    def _solve_with_exhaustive(self, questions_data: dict, questions: list) -> bool:
+        """对单选/判断题做有界穷举；未启用时等价于原有单次提交。"""
+        from config import GloConfig
+        from exhaustive import ExhaustiveSolver, SolverConfig, VarSpec
+
+        cfg = SolverConfig.from_dict(
+            (GloConfig.data.get("FunConfig", {}) or {})
+            .get("deal-mission", {}).get("exhaustive", {})
+        )
+
+        if not cfg.enable:
+            # 穷举未启用：直接走原有单次提交路径，行为与改动前完全一致
+            return self._submit_answers(self._build_submit_payload(questions_data))
+
+        payload = self._build_submit_payload(questions_data)
+
+        base_answers = {}
+        var_specs = []
+        for q in questions:
+            q_id = str(q.get("id", ""))
+            if not q_id:
+                continue
+            af = q.get("answerField", {}) or {}
+            # 展平后的答案值作为穷举种子；键用题目 id，供 _build_submit_payload 回填
+            base_answers[q_id] = payload.get(f"answer{q_id}", "")
+
+            q_type = q.get("type", "")
+            atype = str(af.get(f"answertype{q_id}", ""))
+
+            if q_type == "judgement" or atype == "3":
+                var_specs.append(VarSpec(q_id, "judgement", ["true", "false"]))
+                continue
+            if q_type != "single" and atype != "0":
+                continue
+
+            # 单选题：优先用结构化选项值，否则从选项文本推导候选字母
+            options = q.get("options", "")
+            cands = []
+            if isinstance(options, list):
+                for opt in options:
+                    if isinstance(opt, dict):
+                        val = opt.get("value") or opt.get("letter") or opt.get("name")
+                    else:
+                        val = opt
+                    if val is not None and str(val) != "":
+                        cands.append(str(val))
+            else:
+                text = str(options or "")
+                cands = _extract_letters(text)
+                if not cands:
+                    lines = _multi_cut(text)
+                    if len(lines) >= 2:
+                        cands = [chr(65 + i) for i in range(len(lines))]
+
+            seen, uniq = set(), []
+            for c in cands:
+                if c and c not in seen:
+                    seen.add(c)
+                    uniq.append(c)
+            if len(uniq) < 2:
+                loguru.logger.debug(f"      穷举跳过题目 {q_id}：候选不足（{uniq}）")
+                continue
+            var_specs.append(VarSpec(q_id, "single", uniq))
+
+        submit_once = lambda ans: self._submit_raw(self._build_submit_payload(questions_data, ans))
+        solver = ExhaustiveSolver(submit_once, self._check_passed, cfg,
+                                  stop_event=self._stop_event, logger=loguru.logger)
+        result = solver.solve(base_answers, var_specs)
+
+        if not result.passed:
+            loguru.logger.warning(f"穷举未通过：{result.reason}")
+            return False
+
+        # 命中：把最终答案写回题目结构与提交字段，保持记录与提交内容一致
+        for q in questions:
+            q_id = str(q.get("id", ""))
+            if q_id not in result.answers:
+                continue
+            final = result.answers[q_id]
+            af = q.get("answerField", {}) or {}
+            af[f"answer{q_id}"] = final
+            q["answerField"] = af
+            questions_data[f"answer{q_id}"] = final
+
+        # 参与穷举的题回写答题记录（source=exhaustive, correct=1）
+        try:
+            from answer_record import get_answer_record_dao
+            dao = get_answer_record_dao()
+            for spec in var_specs:
+                dao.upsert_record(
+                    str(self.courseId), self.workid, spec.question_id,
+                    my_answer=result.answers.get(spec.question_id, ""),
+                    source="exhaustive", correct=1,
+                )
+        except Exception as e:
+            loguru.logger.debug(f"穷举记录回写失败: {e}")
+
+        return True
 
     # ── 主流程 — adapted from reference implementation
 
@@ -758,6 +984,10 @@ class Work(Media):
             q_title = q.get("title", "")
             q_type = q.get("type", "single")
             q_options = q.get("options", "")
+
+            # 字体反混淆 + 图片OCR（可插拔，默认关闭；关闭时零行为变化）
+            q_title = self._decode_text(self._ocr_text(q_title))
+            q_options = self._decode_text(self._ocr_text(q_options))
 
             loguru.logger.info(f"  题目: {q_title[:50]}{'...' if len(q_title) > 50 else ''}")
 
@@ -893,27 +1123,12 @@ class Work(Media):
             questions_data["pyFlag"] = ""
 
         # 组建扁平化提交表单
-        for q in questions_data["questions"]:
-            q_id = q["id"]
-            af = q.get("answerField", {})
-            ans = af.get(f"answer{q_id}", "")
-            atype = af.get(f"answertype{q_id}", "0")
-
-            if questions_data["pyFlag"] == "1":
-                src = q.get(f"answerSource{q_id}", "")
-                if src not in ("cover", "tiku", "ai", "ai_content"):
-                    ans = ""
-
-            questions_data[f"answer{q_id}"] = ans
-            questions_data[f"answertype{q_id}"] = atype
-
-        submit_data = dict(questions_data)
-        submit_data.pop("questions", None)
+        submit_data = self._build_submit_payload(questions_data)
 
         answer_count = sum(1 for k in submit_data if k.startswith('answer') and not k.startswith('answertype'))
         loguru.logger.info(f"准备提交 {answer_count} 道题目")
 
-        if self._submit_answers(submit_data):
+        if self._solve_with_exhaustive(questions_data, questions):
             loguru.logger.info(f"作业 '{self.title}' 提交成功")
             return True
         else:

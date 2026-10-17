@@ -52,15 +52,31 @@ FunConfig:
     submit-mode: auto  # auto=按覆盖率决定, save=仅保存
     notopen-action: retry  # 遇到关闭任务点时的行为: retry-重试, ask-询问, continue-继续
     speed: 1.0  # 视频播放倍速 (默认1.0, 最大2.0)
-    jobs: 4  # 同时进行的章节数 (默认4)
+    # 注意：并发数不由独立字段配置，实际由上方 enable-multi-thread / max-concurrent-threads 控制
     learning-mode: stage  # 学习模式: stage=闯关(任务点循环重拉+章节门禁) / sequential=顺序 / concurrent=并发 / review=复习
     progress-persistence: true  # 是否启用章节级进度记忆（重启续学）
+    exhaustive:  # 客观题（单选/判断）答案穷举验证：应对「正确率过低则打回重做」
+      enable: false  # 默认关闭；开启后对单选/判断题反复提交直到整卷通过
+      interval: 3.0  # 两次提交的最小间隔（秒），防止触发平台风控
+      per-question-max-tries: 5  # 单题在爬坡阶段最多尝试次数
+      max-submissions: 30  # 单个任务点最大提交次数上限
+      backoff-on-fail: 5.0  # 被平台打回后的额外退避（秒）
+      max-vars: 8  # 参与穷举的题数上限，超过则放弃穷举
+      max-combos: 200  # 候选组合数上限，超过则放弃穷举
+    font-decode:  # 字体反混淆：还原 font-cxsecret 动态混淆字体渲染的题干/选项
+      enable: false  # 默认关闭；开启前需先运行 tools/build_font_map.py 生成字形映射表
+      map-table: 'data/font_map_table.json'  # 映射表路径（相对 engine 目录）；缺失时自动降级返回原文
+    vision-ocr:  # 视觉模型 OCR：图片题（题干/选项为图片）经多模态大模型识别为文本后再作答
+      enable: false  # 默认关闭；需 AIConfig 中至少一家 OpenAI 兼容的多模态提供商可用
+      model: ''  # 视觉模型名覆盖（如 gpt-4o）；留空沿用提供商配置的 model
+      max-image-mb: 5  # 单张图片大小上限（MB），超限跳过识别
   set-log:
     delay: 30 # 刷取学习次数的延迟，单位s
 
 TikuConfig:
-  provider: ''  # 题库提供商: TikuYanxi, TikuGo, TikuLike, AI, SiliconFlow
+  provider: ''  # 题库提供商: TikuYanxi, TikuGo, TikuLike, TikuAdapter, AI, SiliconFlow（逗号分隔可多题库轮询回退）
   token: ''  # 题库token（如果需要）
+  tikuadapter_url: ''  # TikuAdapter 自建题库服务地址（如 http://localhost:8060，可写到 /adapter-service/search 并带 ?use=...&xxxToken=... 参数；空=禁用）
   api_key: ''  # AI API Key（使用AI题库时需要；请勿填写他人泄露的密钥，请从控制台申请后配置）
   base_url: 'https://api.deepseek.com'  # AI API Base URL
   model: 'deepseek-chat'  # AI模型名称

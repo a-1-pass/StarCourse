@@ -25,15 +25,24 @@ import yaml
 
 logger = logging.getLogger("AIConfig")
 
-_HERE = os.path.dirname(os.path.abspath(__file__))  # engine/
-_ROOT = os.path.dirname(_HERE)                      # project root
+_HERE = os.path.dirname(os.path.abspath(__file__))  # engine/ai_providers/
+_ROOT = os.path.dirname(_HERE)                      # engine/
 
 
 def _candidate_json_paths():
-    return [
-        os.path.join(_HERE, "config.json"),
+    paths = []
+    # 打包模式下 config.json 落用户数据目录（bundle 内不可写，且密钥不应随包分发）
+    try:
+        from runtime_paths import is_frozen, config_json_path
+        if is_frozen():
+            paths.append(config_json_path())
+    except Exception:
+        pass
+    paths.extend([
         os.path.join(_ROOT, "config.json"),
-    ]
+        os.path.join(os.path.dirname(_ROOT), "config.json"),
+    ])
+    return paths
 
 
 def normalize_json_config(raw: dict) -> dict:
@@ -75,16 +84,38 @@ def _load_config_json() -> Optional[dict]:
     return None
 
 
-def _load_config_yml() -> Optional[dict]:
-    path = os.path.join(_HERE, "config.yml")
+def _candidate_yml_paths():
+    """config.yml 候选路径。
+
+    frozen 模式读 bundle 内只读资源（``sys._MEIPASS``），
+    开发模式读 ``engine/config.yml``（``_HERE`` 下并无此文件，
+    历史上误读 ``engine/ai_providers/config.yml`` 导致回退从不生效）。
+    """
+    paths = []
     try:
-        with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        ai_cfg = data.get("AIConfig")
-        if isinstance(ai_cfg, dict) and ai_cfg.get("providers"):
-            return ai_cfg
-    except Exception as e:
-        logger.debug(f"读取 config.yml AIConfig 失败: {e}")
+        from runtime_paths import is_frozen, bundle_dir
+        if is_frozen():
+            paths.append(os.path.join(bundle_dir(), "config.yml"))
+    except Exception:
+        pass
+    paths.append(os.path.join(_ROOT, "config.yml"))
+    return paths
+
+
+def _load_config_yml() -> Optional[dict]:
+    for path in _candidate_yml_paths():
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            ai_cfg = data.get("AIConfig")
+            # 仅当 AIConfig 段确实存在提供商配置时才采用，保持与 json 侧一致的语义
+            if isinstance(ai_cfg, dict) and ai_cfg.get("providers"):
+                logger.debug(f"AI 配置回退加载自 {path}")
+                return ai_cfg
+        except Exception as e:
+            logger.debug(f"读取 {path} AIConfig 失败: {e}")
     return None
 
 

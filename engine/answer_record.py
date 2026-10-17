@@ -6,7 +6,8 @@
 2. 刷题进度：按课程/作业统计已答题数、题库/AI 命中数、随机兜底数；
 3. 错题集：命中失败（random 来源）或被标记为错误的题目，可导出 JSON 便于同步迁移。
 
-数据文件位于 engine/data/answer_records.db，随项目目录整体迁移即可移植。
+数据文件默认位于 engine/data/answer_records.db（打包模式下落用户数据目录，
+见 runtime_paths.data_file），随项目目录整体迁移即可移植。
 """
 import json
 import os
@@ -16,8 +17,11 @@ import time
 
 import loguru
 
+from runtime_paths import data_file as _data_file
+
 _DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-_DB_PATH = os.path.join(_DB_DIR, "answer_records.db")
+# frozen 时自动切换为用户数据目录（必要时从 bundle 种子拷贝初始库）
+_DB_PATH = _data_file("answer_records.db")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (

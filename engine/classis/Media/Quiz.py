@@ -75,7 +75,7 @@ def _clean_res(res):
 
 
 class Quiz(Media):
-    def __init__(self, attachment: dict, headers, defaults: dict, courseId: str, ai_client=None, strategy: str = "first", tiku=None):
+    def __init__(self, attachment: dict, headers, defaults: dict, courseId: str, ai_client=None, strategy: str = "first", tiku=None, stop_event=None):
         super().__init__(attachment, headers)
         self._original_headers = dict(headers)
         self.defaults = defaults
@@ -91,6 +91,11 @@ class Quiz(Media):
         self.strategy = strategy
         self._tiku = tiku
         self.questions = []
+        # 可中断事件（用于穷举提交间隔等待），默认 None 表示不可中断
+        self._stop_event = stop_event
+        # 字体反混淆 / 视觉OCR（可插拔，config.yml 默认关闭；None=未启用，路径与现状一致）
+        self._font_decoder = None
+        self._vision_ocr = None
 
     def get_status(self) -> dict:
         quiz_urls = [
@@ -144,6 +149,9 @@ class Quiz(Media):
             self.work_enc = work_enc_match.group(1) if work_enc_match else ""
             loguru.logger.debug(f"获取到 workEnc: {self.work_enc[:20] if self.work_enc else '空'}...")
 
+            # 字体反混淆 / 视觉OCR 预处理（默认关闭，关闭时零行为变化）
+            self._prepare_text_helpers(response_text)
+
             try:
                 html = etree.HTML(response_text)
                 questions = html.xpath(
@@ -180,6 +188,50 @@ class Quiz(Media):
 
         loguru.logger.debug("无法解析作业状态")
         return None
+
+    # ── 字体反混淆 / 视觉OCR（可插拔，默认关闭） ─────────────
+
+    def _prepare_text_helpers(self, page_html: str):
+        """按配置开关初始化字体解码器与视觉OCR；关闭或失败时保持 None。"""
+        try:
+            from font_decode import build_decoder_from_page
+            decoder = build_decoder_from_page(page_html)
+            if decoder is not None:
+                self._font_decoder = decoder
+        except Exception as e:
+            loguru.logger.debug(f"字体反混淆预处理失败: {e}")
+        try:
+            from vision_ocr import build_ocr_from_config
+            ocr = build_ocr_from_config(client=self._ai_client)
+            if ocr is not None:
+                self._vision_ocr = ocr
+        except Exception as e:
+            loguru.logger.debug(f"视觉OCR初始化失败: {e}")
+
+    def _decode_text(self, text: str) -> str:
+        """字体反混淆解码；未启用/失败时原样返回（零行为变化）。"""
+        if self._font_decoder is None or not text:
+            return text
+        try:
+            return self._font_decoder.decode(text)
+        except Exception:
+            return text
+
+    def _ocr_question_images(self, question) -> str:
+        """OCR 题目元素内所有 <img>，返回拼接文本；未启用/无图返回空串。"""
+        if self._vision_ocr is None:
+            return ""
+        try:
+            urls = [u for u in question.xpath(".//img/@src") if u and u.strip()]
+            parts = []
+            for url in urls:
+                result = self._vision_ocr.recognize(url.strip(), headers=self.headers)
+                if result:
+                    parts.append(f"[图片文字: {result}]")
+            return "\n".join(parts)
+        except Exception as e:
+            loguru.logger.debug(f"题目图片OCR失败（已跳过）: {e}")
+            return ""
 
     def do_finish(self) -> bool:
         status = self.get_status()
@@ -229,7 +281,7 @@ class Quiz(Media):
             loguru.logger.info(f"作业 '{self.title}' 没有可提交的答案")
             return True
 
-        return self._submit_answers(answers, question_ids)
+        return self._solve_with_exhaustive(answers, question_ids)
 
     def _generate_answers(self, tiku=None) -> dict:
         answers = {}
@@ -443,6 +495,12 @@ class Quiz(Media):
                 all_text = ''.join(question.xpath(".//text()")).strip()
                 title = re.sub(r'^\d+[\.\s、]+', '', all_text[:200])
 
+            # 字体反混淆 + 图片OCR（可插拔，默认关闭；关闭时零行为变化）
+            title = self._decode_text(title)
+            ocr_text = self._ocr_question_images(question)
+            if ocr_text:
+                title = (title + "\n" + ocr_text).strip() if title else ocr_text
+
             input_elems = radios if radios else checkboxes
             for idx, inp in enumerate(input_elems):
                 value = inp.get('value', '')
@@ -461,6 +519,8 @@ class Quiz(Media):
 
                 option_text = re.sub(r'^[A-Za-z]\s*[.、:：]?\s*', '', option_text)
                 option_text = re.sub(r'\s*选择\s*$', '', option_text)
+                # 字体反混淆解码选项文字（可插拔，默认关闭；关闭时零行为变化）
+                option_text = self._decode_text(option_text)
 
                 if idx == 0 and len(input_elems) == 2:
                     opt_lower = option_text.lower()
@@ -700,7 +760,12 @@ class Quiz(Media):
 
         return selected
 
-    def _submit_answers(self, answers: dict, question_ids: list) -> bool:
+    def _submit_raw(self, answers: dict, question_ids: list) -> tuple[bool, str]:
+        """提交答案，返回 (是否请求成功, 平台返回文案)。
+
+        与 ``_submit_answers`` 共用同一段请求逻辑，区别仅在于额外回传平台文案，
+        供穷举引擎判断「被拒/通过」。
+        """
         loguru.logger.info(f"准备提交 {len(answers)} 个答案，共 {len(question_ids)} 道题目")
         
         answerwqbid = ",".join(question_ids) + "," if question_ids else ""
@@ -773,12 +838,13 @@ class Quiz(Media):
                 try:
                     result = json.loads(submit_rsp)
                     loguru.logger.info(f"提交结果解析: {result}")
-                    
+
+                    msg = str(result.get("msg") or result.get("message") or "无消息")
                     if result.get("status") or result.get("success") or result.get("code") == 1:
-                        loguru.logger.info(f"✅ 作业 '{self.title}' 提交成功 -> {result.get('msg', '无消息')}")
-                        return True
+                        loguru.logger.info(f"✅ 作业 '{self.title}' 提交成功 -> {msg}")
+                        return True, msg
                     else:
-                        loguru.logger.error(f"❌ 提交失败 -> {result.get('msg', '未知错误')}")
+                        loguru.logger.error(f"❌ 提交失败 -> {msg}")
                         continue
                 except json.JSONDecodeError:
                     loguru.logger.debug(f"响应不是JSON格式: {submit_rsp[:200]}")
@@ -786,7 +852,7 @@ class Quiz(Media):
                 if submit_rsp and ("成功" in submit_rsp or "success" in submit_rsp.lower() or "true" in submit_rsp.lower()):
                     if '"status":true' in submit_rsp or '"success":true' in submit_rsp:
                         loguru.logger.info(f"✅ 作业 '{self.title}' 提交成功（文本匹配）")
-                        return True
+                        return True, ""
             except Exception as e:
                 loguru.logger.error(f"提交异常: {e}")
                 import traceback
@@ -794,4 +860,96 @@ class Quiz(Media):
                 continue
 
         loguru.logger.error(f"❌ 作业 '{self.title}' 所有提交URL都失败了")
-        return False
+        return False, ""
+
+    def _submit_answers(self, answers: dict, question_ids: list) -> bool:
+        # 保持原有签名与返回值不变，等价于只提交一次现有答案
+        return self._submit_raw(answers, question_ids)[0]
+
+    def _check_passed(self) -> bool:
+        """穷举通过判定：作业状态显示已完成即视为通过。"""
+        try:
+            return bool(self.get_status().get("completed"))
+        except Exception as e:
+            loguru.logger.debug(f"作业完成判定失败: {e}")
+            return False
+
+    def _solve_with_exhaustive(self, answers: dict, question_ids: list, q_infos: list = None) -> bool:
+        """对单选/判断题做有界穷举；未启用时等价于原有单次提交。"""
+        from config import GloConfig
+        from exhaustive import ExhaustiveSolver, SolverConfig, VarSpec
+
+        cfg = SolverConfig.from_dict(
+            (GloConfig.data.get("FunConfig", {}) or {})
+            .get("deal-mission", {}).get("exhaustive", {})
+        )
+
+        if not cfg.enable:
+            # 穷举未启用：直接走原有单次提交路径，行为与改动前完全一致
+            return self._submit_answers(answers, question_ids)
+
+        base_answers = dict(answers)
+
+        if q_infos is None:
+            q_infos = [self._extract_question_info(q, i) for i, q in enumerate(self.questions)]
+
+        var_specs = []
+        for info in q_infos:
+            q_type_zh = info.get("question_type", "")
+            is_judge = bool(info.get("is_true_false")) or q_type_zh == "判断题"
+            is_single = q_type_zh == "单选题"
+            if not is_judge and not is_single:
+                continue
+
+            options = info.get("options", []) or []
+            if not options:
+                loguru.logger.debug(f"      穷举跳过题目 {info.get('question_id', '')}：无选项")
+                continue
+
+            # question_id 用现有 answers 字典的键（即 option 的 name）
+            key = options[0].get("name", "")
+            if not key or key not in base_answers:
+                loguru.logger.debug(f"      穷举跳过题目 {info.get('question_id', '')}：答案键 {key} 不在提交集合中")
+                continue
+
+            cands, seen = [], set()
+            for opt in options:
+                val = opt.get("value", "")
+                if val is None or val == "":
+                    continue
+                sval = str(val)
+                if sval not in seen:
+                    seen.add(sval)
+                    cands.append(sval)
+            if len(cands) < 2:
+                loguru.logger.debug(f"      穷举跳过题目 {key}：候选不足（{cands}）")
+                continue
+            var_specs.append(VarSpec(key, "judgement" if is_judge else "single", cands))
+
+        submit_once = lambda ans: self._submit_raw(ans, question_ids)
+        solver = ExhaustiveSolver(submit_once, self._check_passed, cfg,
+                                  stop_event=self._stop_event, logger=loguru.logger)
+        result = solver.solve(base_answers, var_specs)
+
+        if not result.passed:
+            loguru.logger.warning(f"穷举未通过：{result.reason}")
+            return False
+
+        # 命中：把最终答案写回 answers，保持提交内容与记录一致
+        for key, val in result.answers.items():
+            answers[key] = val
+
+        # 参与穷举的题回写答题记录（source=exhaustive, correct=1）
+        try:
+            from answer_record import get_answer_record_dao
+            dao = get_answer_record_dao()
+            for spec in var_specs:
+                dao.upsert_record(
+                    str(self.courseId), self.workid, spec.question_id,
+                    my_answer=result.answers.get(spec.question_id, ""),
+                    source="exhaustive", correct=1,
+                )
+        except Exception as e:
+            loguru.logger.debug(f"穷举记录回写失败: {e}")
+
+        return True

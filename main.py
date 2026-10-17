@@ -101,7 +101,9 @@ class AppMainWindow(QMainWindow):
         root.addWidget(body)
 
     def _load_theme(self):
-        qss = os.path.join(_PROJECT_ROOT, "theme.qss")
+        # 兼容 PyInstaller 打包：frozen 时从 sys._MEIPASS 读取，开发时从项目根读取
+        from src.resource_path import resource_path
+        qss = resource_path("theme.qss")
         if os.path.exists(qss):
             with open(qss, "r", encoding="utf-8") as fh:
                 self.setStyleSheet(fh.read())

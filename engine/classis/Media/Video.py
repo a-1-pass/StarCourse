@@ -20,6 +20,43 @@ _VIDEO_LOG_WAIT_MAX = 4.0
 _video_log_lock = threading.Lock()
 _last_video_log_time = 0.0
 
+# 视频倍速配置（config.yml FunConfig.deal-mission.speed）的钳制范围
+SPEED_MIN = 1.0
+SPEED_MAX = 2.0
+SPEED_DEFAULT = 1.0
+
+
+def resolve_speed(config_data=None) -> float:
+    """解析视频倍速配置。
+
+    - 上限钳制 2.0、下限钳制 1.0
+    - 配置缺失 / 非法值（非数字、NaN 等）一律回退 1.0
+    - config_data 缺省时读取全局 GloConfig（延迟导入避免循环依赖）
+    """
+    if config_data is None:
+        try:
+            from config import GloConfig
+            config_data = GloConfig.data
+        except Exception:
+            config_data = None
+    try:
+        raw = (config_data or {}).get("FunConfig", {}).get("deal-mission", {}).get("speed", SPEED_DEFAULT)
+        speed = float(raw)
+    except (TypeError, ValueError, AttributeError):
+        return SPEED_DEFAULT
+    if speed != speed:  # NaN
+        return SPEED_DEFAULT
+    return min(SPEED_MAX, max(SPEED_MIN, speed))
+
+
+def advance_play_time(play_time: float, dt: float, speed: float, target_duration: float) -> float:
+    """按倍速推进上报进度（秒），并钳制到目标时长。
+
+    speed=1.0 时与原行为（play_time + dt）完全一致；
+    speed=2.0 时上报进度以 2 倍真实时间推进，等时长刷取的实际等待时间减半。
+    """
+    return min(target_duration, play_time + max(0.0, dt) * max(SPEED_MIN, speed))
+
 
 def _video_log_rate_limit():
     global _last_video_log_time
@@ -54,6 +91,9 @@ class Video(Media):
         self.cpi = self.defaults.get("cpi", "")
         # 可选停止事件（由刷课引擎注入；None 时行为与历史完全一致）
         self._stop_event = None
+        # 倍速（由刷课引擎按 config.yml 的 speed 注入，仅 video-mode 1 等时长刷取生效；
+        # 默认 1.0 时进度推进与历史行为完全一致）
+        self.speed = SPEED_DEFAULT
 
     def _stopped(self) -> bool:
         return self._stop_event is not None and self._stop_event.is_set()
@@ -398,7 +438,7 @@ class Video(Media):
 
             dt = time.time() - last_iter
             last_iter = time.time()
-            play_time = min(target_duration, play_time + dt)
+            play_time = advance_play_time(play_time, dt, self.speed, target_duration)
 
             if self._sleep(VIDEO_PROGRESS_INTERVAL):
                 self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")

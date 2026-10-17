@@ -24,6 +24,10 @@ config.json
 profiles.json
 ai_config.json
 ai_answer_cache.json
+cookies*.txt
+*.db
+*.sqlite
+*.sqlite3
 
 # Engine runtime data (答题记录数据库等本地数据)
 engine/data/
@@ -31,6 +35,10 @@ engine/data/
 # Logs
 *.log
 logs/
+
+# 测试与 IDE 个人产物（不随仓库发布）
+.pytest_tmp/
+.trae/
 
 # OS
 .DS_Store

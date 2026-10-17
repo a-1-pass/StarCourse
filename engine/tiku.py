@@ -12,6 +12,7 @@ import loguru
 import requests
 
 from cache_dao import CacheDAO
+from utils import doPost
 
 
 class TikuBase(ABC):
@@ -238,6 +239,128 @@ class TikuLike(TikuBase):
         return None
 
 
+class TikuAdapter(TikuBase):
+    """TikuAdapter 自建题库适配器（https://github.com/DokiDoki1103/tikuAdapter）。
+
+    接口约定（以官方 README 实际协议为准）：
+      - POST {url}/adapter-service/search
+      - 请求体 JSON: {"question": 题干, "options": [选项...], "type": 题型码}
+        题型码：单选0 多选1 填空2 判断3 问答4
+      - URL 可附带查询参数指定题库与各题库 Token，
+        如 ?use=wanneng,icodef&icodefToken=xxx（此时 url 直接写到 search 端点）
+      - 响应: {"answer": {"bestAnswer": [...], "answerText": "...",
+                          "allAnswer": [[...]]}, ...}
+    配置项 tikuadapter_url 为空时禁用（init_tiku 返回 False，不参与轮询）。
+    网络请求统一走 engine/utils 的 doPost（自动注入反检测头与随机延迟）。
+    """
+
+    # 题型字符串 → tikuAdapter 题型码（单选0 多选1 填空2 判断3 问答4）
+    TYPE_MAP = {
+        "single": 0, "单选": 0, "单选题": 0,
+        "multiple": 1, "多选": 1, "多选题": 1,
+        "completion": 2, "填空": 2, "填空题": 2,
+        "judgement": 3, "判断": 3, "判断题": 3,
+        "shortanswer": 4, "简答": 4, "简答题": 4, "问答": 4,
+    }
+
+    def __init__(self, config: dict = None):
+        super().__init__(config)
+        self.url = str(config.get("tikuadapter_url", "")).strip() if config else ""
+
+    def _search_url(self) -> str:
+        # 允许 url 直接写到 /adapter-service/search（可附带 use/Token 查询参数）；
+        # 只填服务根地址时自动补上端点
+        if "/adapter-service/search" in self.url:
+            return self.url
+        return self.url.rstrip("/") + "/adapter-service/search"
+
+    def _map_type(self, q_type) -> int:
+        # 数字题型码直接透传（钳制在 0~4）；字符串按 TYPE_MAP 映射，未知回退单选
+        if isinstance(q_type, int) and 0 <= q_type <= 4:
+            return q_type
+        return self.TYPE_MAP.get(str(q_type or "").strip().lower(), 0)
+
+    def _post_search(self, payload: dict) -> 'dict|None':
+        """POST /adapter-service/search，返回解析后的 JSON；失败返回 None。"""
+        resp = doPost(
+            self._search_url(),
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            ifFullBack=True,
+        )
+        if resp is None or getattr(resp, "status_code", 0) != 200:
+            return None
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _extract_answer(data: 'dict|None') -> 'str|None':
+        """从响应提取答案：优先 bestAnswer 列表（# 连接），其次 answerText。"""
+        answer = (data or {}).get("answer")
+        if not isinstance(answer, dict):
+            return None
+        best = answer.get("bestAnswer")
+        if isinstance(best, list) and best:
+            return "#".join(str(a) for a in best)
+        text = str(answer.get("answerText", "") or "").strip()
+        return text or None
+
+    def init_tiku(self) -> bool:
+        return bool(self.url)
+
+    def check_connection(self) -> bool:
+        if not self.url:
+            loguru.logger.error("TikuAdapter 未配置 tikuadapter_url（自建服务地址，如 http://localhost:8060）")
+            return False
+        try:
+            data = self._post_search({"question": "连接测试", "options": [], "type": 0})
+            if data is not None and "answer" in data:
+                return True
+            loguru.logger.error("TikuAdapter 连接失败: 响应缺少 answer 字段")
+            return False
+        except Exception as e:
+            loguru.logger.error(f"TikuAdapter 连接失败: {e}")
+            return False
+
+    def query(self, question: dict) -> Optional[str]:
+        title = str(question.get("title", "")).strip()
+        if not title or not self.url:
+            return None
+
+        cached = self.cache.get_cache(title)
+        if cached:
+            loguru.logger.debug(f"缓存命中: {title[:50]}...")
+            return cached
+
+        if self.query_delay > 0:
+            time.sleep(self.query_delay)
+
+        options = question.get("options", "")
+        if isinstance(options, str):
+            # 字符串选项按行拆分为列表（协议要求数组）
+            options = [line.strip() for line in options.splitlines() if line.strip()]
+
+        payload = {
+            "question": title,
+            "options": list(options) if options else [],
+            "type": self._map_type(question.get("type")),
+        }
+
+        try:
+            data = self._post_search(payload)
+            answer = self._extract_answer(data)
+            if answer:
+                self.cache.add_cache(title, answer)
+                return answer
+        except Exception as e:
+            loguru.logger.debug(f"TikuAdapter 查询失败: {e}")
+
+        return None
+
+
 class AI(TikuBase):
     def __init__(self, config: dict = None):
         super().__init__(config)
@@ -353,6 +476,7 @@ class Tiku(TikuBase):
         "TikuYanxi": TikuYanxi,
         "TikuGo": TikuGo,
         "TikuLike": TikuLike,
+        "TikuAdapter": TikuAdapter,
         "AI": AI,
         "SiliconFlow": SiliconFlow,
     }
@@ -411,6 +535,32 @@ class Tiku(TikuBase):
                 self._active_tiku = tiku
                 return True
 
+        return False
+
+    def check_connection(self) -> bool:
+        """连通性检查：委托当前 active provider；未就绪/全部不可用返回 False。
+
+        原先该抽象方法未实现导致 ``Tiku()`` 实例化直接 TypeError，
+        整个题库轮询路径在生产中被 try/except 静默掩盖，此处补齐。
+        active provider 检查失败时按注册顺序继续尝试其余 provider，
+        任一可用即切换为 active 并返回 True。
+        """
+        if self.DISABLE or not self._tikus:
+            return False
+
+        # active 优先，其余按注册顺序兜底
+        candidates = list(self._tikus)
+        if self._active_tiku in candidates:
+            candidates.remove(self._active_tiku)
+            candidates.insert(0, self._active_tiku)
+
+        for tiku in candidates:
+            try:
+                if tiku.check_connection():
+                    self._active_tiku = tiku
+                    return True
+            except Exception as e:
+                loguru.logger.debug(f"题库 {tiku.name} 连通性检查异常: {e}")
         return False
 
     def check_llm_connection(self) -> bool:

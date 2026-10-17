@@ -9,9 +9,10 @@ from config import GloConfig
 from classis.Media.Book import Book
 from classis.Media.BBS import BBS
 from classis.Media.Document import Document
+from classis.Media.Hyperlink import Hyperlink
 from classis.Media.Live import Live
 from classis.Media.Read import Read
-from classis.Media.Video import Video
+from classis.Media.Video import Video, resolve_speed
 from classis.Media.Quiz import Quiz
 from classis.Media.Work import Work
 from card_decode import fetch_chapter_attachments, is_live_attachment, is_read_attachment, study_empty_page
@@ -45,6 +46,8 @@ class DealCourse:
         self.mission_list = []
         self.video_mode = GloConfig.data.get("FunConfig").get("deal-mission").get("video-mode")
         self.single_thread = GloConfig.data.get("FunConfig").get("deal-mission").get("single-thread")
+        # 视频倍速（config.yml speed；钳制 1.0~2.0，非法值回退 1.0），仅 video-mode 1 生效
+        self.speed = resolve_speed()
 
         # ── 学习模式与章节级进度 ──
         # GUI 传入优先；缺省回退到 config.yml；最终缺省 'stage'（闯关模式为学习通主流）
@@ -467,6 +470,10 @@ class DealCourse:
                         _audio_fallback._stop_event = self._stop_event
                         finish_status = _audio_fallback.do_finish()
                 else:
+                    # video-mode 1（等时长刷取）：按 config.yml 的 speed 倍率推进上报进度
+                    _video.speed = self.speed
+                    if self.speed > 1.0:
+                        self.log.info(f"   倍速: {self.speed}x")
                     _thread = threading.Thread(
                         target=DealVideo.run_video,
                         args=(_video, self.user, self.log),
@@ -540,7 +547,8 @@ class DealCourse:
                 clazzId=self.class_id, userid=self.user.uid,
                 ktoken=defaults.get("ktoken", ""),
                 knowledgeid=str(mission_item.get("knowledge_id", "")),
-                cpi=defaults.get("cpi", "")
+                cpi=defaults.get("cpi", ""),
+                stop_event=self._stop_event
             ).do_finish()
             return finish_status, work_title
 
@@ -551,6 +559,16 @@ class DealCourse:
                 course_id=self.course_id, class_id=self.class_id,
                 ai_client=self.ai_client, strategy=self.answer_strategy
             ).do_finish()
+            return finish_status, media_name
+
+        if (media_type == "hyperlink" or media_module in ("hyperlink", "link", "outerlink")
+                or (media.get("property") or {}).get("url")):
+            self.log.info(f"开始处理超链接任务点:{media_name}")
+            finish_status = Hyperlink(media, self.user.headers).do_finish()
+            if finish_status:
+                self.log.success(f"任务点'{media_name}'完成成功")
+            else:
+                self.log.error(f"任务点'{media_name}'完成失败")
             return finish_status, media_name
 
         self.log.warning(f"检测到不支持的任务点类型:{media_type} / module:{media_module}")

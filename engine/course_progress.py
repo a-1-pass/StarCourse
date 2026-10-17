@@ -22,8 +22,11 @@ import time
 
 import loguru
 
+from runtime_paths import data_file as _data_file
+
 _DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-_DB_PATH = os.path.join(_DB_DIR, "answer_records.db")
+# 与 answer_record 同库；frozen 时自动切换为用户数据目录
+_DB_PATH = _data_file("answer_records.db")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS chapter_progress (

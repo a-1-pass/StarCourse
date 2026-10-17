@@ -10,6 +10,7 @@ import glob
 import logging
 import os
 import sys
+import zipfile
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -168,3 +169,31 @@ def purge_all_logs() -> int:
             except OSError:
                 pass
     return removed
+
+
+def export_logs(dest_dir, log_dir=None) -> str:
+    """把日志目录打包为带时间戳的 zip，返回 zip 文件路径（纯逻辑，可被无头测试）。
+
+    :param dest_dir: 导出目标目录（不存在则自动创建）
+    :param log_dir: 日志源目录，缺省为运行时日志目录
+    :return: 生成的 zip 文件绝对路径
+    :raises FileNotFoundError: 日志目录中没有任何日志文件
+    """
+    src = Path(log_dir) if log_dir else _log_directory()
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    # 收集日志文件（含轮转备份 *.log.1 等），按文件名排序保证 zip 内容稳定
+    files = sorted(
+        {p for pat in ("*.log", "*.log.*") for p in src.glob(pat) if p.is_file()},
+        key=lambda p: p.name,
+    )
+    if not files:
+        raise FileNotFoundError(f"日志目录中没有可导出的日志文件: {src}")
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_path = dest / f"{_LOGGER_TAG}_logs_{stamp}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in files:
+            zf.write(p, arcname=p.name)
+    return str(zip_path)

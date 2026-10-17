@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from src.account_store import AccountProfile
-from src.log_manager import log
+from src.log_manager import export_logs, log
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -322,7 +322,21 @@ class AISettingsDialog(QDialog):
 
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._engine_dir = os.path.join(project_root, "engine")
-        self._config_path = os.path.join(self._engine_dir, "config.json")
+        # 打包（frozen）模式下 config.json 落用户数据目录，开发期保持 engine/config.json
+        self._config_path = self._resolve_config_path()
+
+    @staticmethod
+    def _resolve_config_path() -> str:
+        """解析 AI 配置文件路径，兼容 PyInstaller 打包模式。"""
+        engine_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "engine")
+        try:
+            if engine_dir not in sys.path:
+                sys.path.insert(0, engine_dir)
+            from runtime_paths import config_json_path
+            return config_json_path()
+        except Exception:
+            return os.path.join(engine_dir, "config.json")
 
         self._fields: dict[str, dict] = {}  # provider key -> {字段名: QLineEdit}
         self._data = self._load_raw()
@@ -951,6 +965,11 @@ class CourseWorkshop(QDialog):
         self._log_view.setReadOnly(True)
         self._log_view.setMinimumHeight(130)
         ll.addWidget(self._log_view)
+        # 导出日志：打包日志目录为 zip，便于反馈问题时附带
+        self._export_log_btn = QPushButton("导出日志")
+        self._export_log_btn.setMinimumHeight(28)
+        self._export_log_btn.clicked.connect(self._on_export_logs)
+        ll.addWidget(self._export_log_btn)
         v.addWidget(lg)
         return w
 
@@ -1598,6 +1617,22 @@ class CourseWorkshop(QDialog):
             self._worker.stop()
         self._cur_status_label.setText("状态: 已停止")
 
+    def _on_export_logs(self):
+        """导出日志：选择目录后把日志打包为 zip 并提示保存路径。"""
+        dest_dir = QFileDialog.getExistingDirectory(self, "选择日志导出目录")
+        if not dest_dir:
+            return
+        try:
+            zip_path = export_logs(dest_dir)
+        except FileNotFoundError:
+            QMessageBox.warning(self, "导出日志", "当前没有可导出的日志文件。")
+            return
+        except Exception as e:
+            QMessageBox.critical(self, "导出日志", f"导出失败:\n{e}")
+            return
+        log.info(f"日志已导出: {zip_path}")
+        QMessageBox.information(self, "导出日志", f"日志已导出到:\n{zip_path}")
+
     def _reset_controls(self):
         self._start_btn.setEnabled(bool(self._queue))
         self._pause_btn.setText("暂停")
@@ -1639,7 +1674,7 @@ class CourseWorkshop(QDialog):
         self._switch_mode("auto")
         task_names = {"video": "视频", "quiz": "测验", "work": "作业",
                       "read": "阅读", "document": "文档", "book": "电子书",
-                      "bbs": "讨论", "live": "直播"}
+                      "bbs": "讨论", "live": "直播", "hyperlink": "超链接"}
         cn_name = task_names.get(task_type, task_type)
         self._append_log(f"[快捷] 开始处理{cn_name}任务: {c.name}")
 
@@ -1696,6 +1731,7 @@ class CourseWorkshop(QDialog):
                                 "book":     lambda task=t: self._client.run_book_task(task, self._cid),
                                 "bbs":      lambda task=t: self._client.run_bbs_task(task, self._cid, self._clid, "random"),
                                 "live":     lambda task=t: self._client.run_live_task(task, self._cid),
+                                "hyperlink": lambda task=t: self._client.run_hyperlink_task(task, self._cid),
                             }
                             handler = handler_map.get(self._type)
                             if handler:

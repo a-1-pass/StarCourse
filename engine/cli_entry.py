@@ -12,6 +12,9 @@ from classis.User import User
 from classis.UserLogger import UserLogger
 from utils import *
 
+# 引擎目录（本文件所在目录），用于摆脱「必须以 engine 为 cwd 运行」的隐含假设
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 logger.remove()
 log = UserLogger()
 
@@ -59,7 +62,9 @@ def get_course(_user: User):
 
 
 def get_config():
-    sys.path.append(".")
+    # 以 __file__ 定位 engine 目录，不再依赖调用方 cwd
+    if _ENGINE_DIR not in sys.path:
+        sys.path.append(_ENGINE_DIR)
     GloConfig.init_yaml_data()
     _config = GloConfig.data
     config_debug = _config.get("GloConfig").get("debug")
@@ -79,7 +84,12 @@ if __name__ == '__main__':
     get_course(user)
 
     functions = []
-    path_list = os.listdir('./functions')
+    # 只扫描 engine/functions 下的包目录（跳过 __pycache__ 等），按 __file__ 定位
+    functions_dir = os.path.join(_ENGINE_DIR, 'functions')
+    path_list = sorted(
+        name for name in os.listdir(functions_dir)
+        if os.path.isfile(os.path.join(functions_dir, name, '__init__.py'))
+    )
     for module_path in path_list:
         logger.debug("Loading function %s" % module_path)
         functions.append(importlib.import_module("functions.%s" % module_path))

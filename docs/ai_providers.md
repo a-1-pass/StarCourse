@@ -80,7 +80,7 @@ DeepSeek 的限制：DeepSeek、OpenAI GPT、Anthropic Claude、百度文心一�
 
 | 文件 | 用途 | 是否入库 |
 |------|------|----------|
-| `engine/config.json` | GUI「AI 模型设置」写入，也可手动编辑；热更新 | 否（.gitignore） |
+| `engine/config.json` | GUI「AI 模型设置」写入，也可手动编辑；热更新（PyInstaller 打包版改写用户数据目录下的 `config.json`） | 否（.gitignore） |
 | `engine/config.yml` → `AIConfig` | 随仓库分发的无密钥模板 | 是 |
 
 ### 3.1 `config.json` 字段说明
@@ -319,3 +319,24 @@ class MyVendorProvider(AIProviderBase):
             raise AIResponseError("myvendor 响应缺少 reply")
         return text
 ```
+
+---
+
+## 8. 配套能力：视觉 OCR（vision-ocr）
+
+`engine/vision_ocr.py` 复用本文档的 `AIConfig` provider 链处理**图片题**：
+题干/选项中的图片先经多模态大模型识别为文字，再进入正常答题流程。
+
+- 开关：`engine/config.yml` → `FunConfig.deal-mission.vision-ocr.enable`，
+  **默认关闭**；开启后需 `AIConfig`（或 `config.json`）中至少一家
+  OpenAI 兼容的多模态提供商可用；
+- `vision-ocr.model` 可覆盖视觉模型名（如 `gpt-4o`），留空沿用提供商
+  配置的 `model`；
+- `vision-ocr.max-image-mb` 限制单张图片大小（默认 5MB），超限跳过；
+- 识别失败自动降级为保留原文，不会中断答题主流程。
+
+相关开关（均在 `config.yml` 的 `FunConfig.deal-mission` 下，默认关闭）：
+`font-decode`（font-cxsecret 混淆字体反混淆，需先运行
+`tools/build_font_map.py` 生成字形映射表）、`speed`（视频播放倍速，
+默认 1.0，最大 2.0）。题库侧另有 `TikuConfig.tikuadapter_url`
+（TikuAdapter 自建题库服务地址，空=禁用）。

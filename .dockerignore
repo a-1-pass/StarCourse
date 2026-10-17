@@ -1,0 +1,37 @@
+# StarCourse Docker 构建上下文排除清单
+
+# 版本控制与 IDE
+.git
+.gitignore
+.idea
+.vscode
+
+# 测试与文档（CLI 镜像不需要）
+tests
+docs
+*.md
+
+# GUI（CLI 形态不需要 PyQt6 相关代码）
+gui
+theme.qss
+main.py
+
+# Python 缓存
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_tmp
+.pytest_cache
+
+# 日志与数据库/缓存文件
+*.log
+*.log.*
+*.db
+*.sqlite
+*.sqlite3
+engine/ai_answer_cache.json
+engine/config.json
+engine/data
+
+# 本地配置（运行时通过 -v 挂载注入）
+# 注意：engine/config.yml 保留在镜像内作为默认配置
