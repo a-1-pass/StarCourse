@@ -1,165 +1,273 @@
-# StarCourse
+<p align="center">
+  <img src="docs/images/logo.png" alt="StarCourse Logo" width="120">
+  <!-- Logo 待补充：可将 emoji 🌟 或设计好的 logo 图放入 docs/images/logo.png -->
+</p>
 
-A desktop automation tool for progressing through online course content on the Chaoxing (超星学习通) education platform. Built with PyQt6 and a pure-HTTP request model — no browser or Selenium required.
+<h1 align="center">🌟 StarCourse</h1>
 
-## Features
+<p align="center">
+  <strong>学习通（超星）自动刷课桌面客户端</strong> —— PyQt6 图形界面 · 纯 HTTP 引擎 · 多 AI 供应商答题
+</p>
 
-- **Multi-account management** — add, remove, and monitor multiple accounts from a single interface
-- **Automated video completion** — instant finish or timed playback modes
-- **AI-assisted quiz answering** — multi-provider architecture (DeepSeek, OpenAI GPT, Claude, Baidu Wenxin, StepFun) with priority-based failover and unified timeout/retry handling
-- **Document and reading tasks** — auto-complete reading nodes, documents, and book chapters
-- **Task queue** — chain multiple courses into a queue with pause / stop controls and real-time progress
-- **Chapter selection** — optionally target specific chapters instead of processing an entire course
-- **Multi-threaded video processing** — configurable worker count for parallel video completion
-- **Anti-detection** — rotating User-Agent pool with modern browser fingerprints, Client Hints headers, and request jittering
+<p align="center">
+  <a href="https://github.com/a-1-pass/StarCourse/releases"><img src="https://img.shields.io/github/v/release/a-1-pass/StarCourse?display_name=tag&sort=semver&label=release" alt="release"></a>
+  <a href="https://github.com/a-1-pass/StarCourse/blob/main/LICENSE"><img src="https://img.shields.io/github/license/a-1-pass/StarCourse" alt="license"></a>
+  <img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="python">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey" alt="platform">
+  <a href="https://github.com/a-1-pass/StarCourse/stargazers"><img src="https://img.shields.io/github/stars/a-1-pass/StarCourse?style=social" alt="stars"></a>
+</p>
 
-## Quick Start
+<p align="center">
+  ⭐ 如果这个项目帮到了你，点右上角 <strong>Star</strong> 支持一下，这是开源持续更新最大的动力！
+</p>
 
-### Prerequisites
+---
 
-- Python 3.10+
-- Windows / macOS / Linux
+## ⚠️ 用前必读
 
-### Installation
+- 本项目**仅供学习与技术交流**，请勿用于任何违反校规、平台服务条款或法律法规的用途。
+- 使用自动化工具操作账号存在被平台风控、限制甚至封禁的风险，**账号风险由使用者自行承担**。
+- 建议控制使用频率：不要同时开启过多线程、不要在短时间内高频请求，倍速建议不超过 2.0。
+- **不支持考试**——一键完成的范围不包括考试与测试（详见 FAQ）。
+- 所有功能均通过发送 GET/POST 请求实现，无需浏览器，效率高、占用低，但平台接口随时可能更新导致部分功能失效，请留意更新。
+
+---
+
+## 🖥️ 界面预览
+
+| 账号面板 | 课程工坊（章节定点） |
+| :---: | :---: |
+| <img src="docs/screenshots/1-账号面板.png" alt="账号面板"> | <img src="docs/screenshots/2-课程工坊.png" alt="课程工坊"> |
+| 多账号列表：用户名 / 显示名称 / 状态 / 目标课程，批量运行 | 章节树勾选定点刷课 + 学习模式选择（闯关/顺序/并发/复习） |
+
+| 签到面板 | AI 设置与答题日志 |
+| :---: | :---: |
+| <img src="docs/screenshots/3-签到面板.png" alt="签到面板"> | <img src="docs/screenshots/4-AI设置.png" alt="AI 设置"> |
+| 五种签到类型（普通/手势/位置/二维码/拍照）+ 一键全部签到 | 多 AI 供应商配置（容灾链）与运行日志导出 |
+
+> 截图为占位路径，图片文件尚未提交，见 [docs/release-checklist.md](docs/release-checklist.md) 中的截图拍摄指引。
+
+---
+
+## ✨ 功能亮点
+
+### 🏆 同类工具几乎全没有的能力
+
+1. **桌面 GUI + 多账号管理**
+   账号面板统一管理多个学习通账号，每个账号独立工作台窗口互不干扰；Cookie 免密登录，过期后自动回退密码登录。同类竞品几乎全是单账号命令行。
+
+2. **五种签到一键全签**（全场独有）
+   普通 / 二维码 / 手势 / 位置 / 拍照，一键扫描全部课程的待签到活动并批量完成。
+
+3. **章节级定点刷课**
+   GUI 勾选指定章节，只刷你选的部分——竞品最多到课程级。
+
+### 🧠 刷课与答题引擎
+
+4. **双层断点续学 + 四种学习模式**
+   章节级 SQLite 进度记忆（重启接着刷）+ 单视频 playTime 续看；闯关 / 顺序 / 并发 / 复习四种模式可选。
+
+5. **答题全家桶**
+   - 三家第三方题库（言溪 / LIKE / TikuGo）+ TikuAdapter 自建题库接入，多 provider 轮询回退；
+   - AI 答题支持 **DeepSeek / OpenAI / Claude / 文心一言 / 阶跃星辰**，priority 链自动容灾切换；
+   - **客观题穷举引擎**：应对「正确率过低打回重做」，贪心爬坡 + Hamming 枚举反复提交直到整卷通过（默认关闭）。
+
+6. **字体反混淆 + 图片题视觉 OCR**（默认关闭，按需开启）
+   - 解析 `font-cxsecret` 动态混淆字体还原题干，fontTools 字形哈希 + 附 `tools/build_font_map.py` 映射表生成工具；
+   - 题干/选项是图片的题目，走多模态大模型视觉识别为文本后再作答。
+
+### 🛠️ 细节与工程化
+
+7. **任务类型全覆盖**：视频/音频、文档/PPT、阅读、电子书、讨论区回帖、直播回放、超链接、章节测验、课后作业（**不含考试**）。
+8. **资源/附件下载**：扫描课程内媒体文件与课件资料，批量下载到指定目录。
+9. **倍速（1.0–2.0）、即时完成、多线程并发**（线程数可调）。
+10. **反检测**：UA 池 + Client Hints 指纹头 + 请求抖动 + 限流退避。
+11. **日志轮转 + 一键导出 zip**：反馈问题时一键打包日志。
+12. **质量保障**：265 个 pytest 测试用例护航。
+
+---
+
+## 📥 下载安装
+
+| 方式 | 适用人群 | 说明 |
+| --- | --- | --- |
+| **Windows x64 exe**（推荐） | 普通用户 | [Releases](https://github.com/a-1-pass/StarCourse/releases) 下载 `StarCourse-windows-x64.zip`，解压即用，单文件约 46MB，无需安装 Python |
+| **macOS arm64 包** | Mac 用户 | [Releases](https://github.com/a-1-pass/StarCourse/releases) 下载 `StarCourse-macos-*.zip`，解压后运行（如被 Gatekeeper 拦截：右键 → 打开） |
+| **源码运行** | 开发者 | Python 3.11+，`py main.py`（见「🚀 快速开始」） |
+| **Docker（CLI 模式）** | 服务器/无界面环境 | `docker build -t starcourse-cli . && docker run --rm -it starcourse-cli`，镜像不含 PyQt6，入口为 `engine/cli_entry.py` |
+
+---
+
+## 🚀 快速开始（5 步）
 
 ```bash
 git clone https://github.com/a-1-pass/StarCourse.git
 cd StarCourse
 pip install -r requirements.txt
+py main.py          # Windows；macOS/Linux 用 python3 main.py
 ```
 
-### Configuration (optional — AI answering)
+1. **启动** `py main.py`，进入账号面板。
+2. **添加账号**：点「+ 添加」，填手机号/学号 + 密码 + 显示名称（可选）。
+3. **打开工作台**：双击账号行或点「管理」，自动 Cookie 免密登录（过期回退密码），拉取课程列表。
+4. **选课选章节**：左侧选课程，勾选目标章节（不勾选=全部），「加入任务队列」。
+5. **开始执行**：点「开始执行」，右侧看进度与日志；需要签到时切到「签到管理」页一键全签。
 
-StarCourse supports multiple LLM providers — DeepSeek, OpenAI GPT, Anthropic
-Claude, Baidu Wenxin, and StepFun — with per-provider keys and a priority-based
-failover chain.
+> 无图形界面 / 服务器环境：使用 CLI 模式 `python engine/cli_entry.py`（交互式命令行，配置走 `engine/config.yml`）。
 
-```bash
-cp config.example.json config.json
-```
+---
 
-Edit `config.json` and fill in the API key(s) of the provider(s) you want to
-use. The same configuration is available in the GUI under **Advanced settings
-→ AI model settings**. Full field reference, code examples, and the provider
-extension guide: [docs/ai_providers.md](docs/ai_providers.md).
+## ⚙️ 配置说明（`engine/config.yml`）
 
-Without AI configuration, quiz answering defaults to question-bank lookups or
-local strategies (first option / random).
+| 字段 | 含义 | 默认值 | 可选值 / 说明 |
+| --- | --- | --- | --- |
+| `FunConfig.deal-mission.video-mode` | 视频完成方式 | `1` | `0`=立即完成，`1`=等时长刷取 |
+| `FunConfig.deal-mission.speed` | 视频倍速 | `1.0` | 1.0–2.0，建议勿超 2.0 |
+| `FunConfig.deal-mission.enable-multi-thread` | 多线程并发刷取 | `true` | 配合 `max-concurrent-threads`（默认 5） |
+| `FunConfig.deal-mission.learning-mode` | 学习模式 | `stage` | `stage`闯关 / `sequential`顺序 / `concurrent`并发 / `review`复习 |
+| `FunConfig.deal-mission.progress-persistence` | 章节级进度记忆（断点续学） | `true` | `false` 关闭 |
+| `FunConfig.deal-mission.exhaustive.enable` | 客观题穷举引擎 | `false` | 开启后应对正确率打回，注意 `interval` 等风控参数 |
+| `FunConfig.deal-mission.font-decode.enable` | 字体反混淆 | `false` | 开启前先运行 `tools/build_font_map.py` 生成映射表 |
+| `FunConfig.deal-mission.vision-ocr.enable` | 视觉模型 OCR（图片题） | `false` | 需 AIConfig 中至少一家 OpenAI 兼容多模态提供商可用 |
+| `TikuConfig.provider` | 题库提供商 | `''` | `TikuYanxi` / `TikuGo` / `TikuLike` / `TikuAdapter` / `AI` / `SiliconFlow`，逗号分隔可多题库轮询回退 |
+| `TikuConfig.token` | 题库 token | `''` | 部分题库必填 |
+| `TikuConfig.tikuadapter_url` | TikuAdapter 自建题库地址 | `''` | 如 `http://localhost:8060` |
+| `AIConfig.active` / `priority` | AI 默认提供商与容灾链 | `deepseek` 起 | 支持 deepseek / openai / claude / wenxin；GUI「AI 模型设置」还支持阶跃星辰 |
+| `AIConfig.providers.*.api_key` | 各厂商 API Key | `''` | 请从各厂商控制台自行申请 |
+| `SignConfig.enable` / `check_interval` | 自动签到开关与检查间隔 | `true` / 60 秒 | |
+| `GloConfig.delay` | 全局请求延迟（防反爬） | 0.5 秒 | |
 
-### Running
+> **优先级提示**：GUI 内「AI 模型设置…」保存的 `config.json` 优先于 `config.yml` 中的 `AIConfig` 段；穷举 / 字体反混淆 / 视觉 OCR 等新功能**全部默认关闭**，按需手动开启。
 
-```bash
-python main.py
-```
+---
 
-The GUI will launch. Click **Add** to create an account profile, then click **Manage** to open the course workspace.
-
-### CLI Mode
-
-The engine also ships with an interactive command-line interface:
-
-```bash
-cd engine
-python cli_entry.py
-```
-
-## Project Structure
+## 🗂️ 目录速览
 
 ```
 StarCourse/
-├── main.py                    # Application entry point (PyQt6)
-├── requirements.txt           # Python dependencies
-├── theme.qss                  # Dark theme stylesheet
-├── config.example.json        # AI configuration template
-│
-├── src/                       # Core logic layer
-│   ├── log_manager.py         #   Logging (rotation + auto-cleanup)
-│   ├── network_utils.py       #   Anti-detection UA pool + helpers
-│   ├── ai_assistant.py        #   DeepSeek AI client
-│   ├── stepfun_ai.py          #   StepFun AI client
-│   ├── engine_adapter.py      #   High-level engine façade
-│   ├── account_store.py       #   Profile persistence (JSON)
-│   └── utils/
-│       └── atomic_io.py       #   Atomic file read/write
-│
-├── engine/                    # Task engine package
-│   ├── cli_entry.py           #   CLI interface
-│   ├── config.yml             #   Engine configuration
-│   ├── config.py              #   Config loader
-│   ├── utils.py               #   HTTP request helpers
-│   ├── card_decode.py         #   Task-point decoder
-│   ├── cache_dao.py           #   Answer cache
-│   ├── tiku.py                #   Question bank interface
-│   ├── deepseek_ai_enhanced.py # Enhanced AI answering
-│   ├── stepfun_ai.py         #   StepFun AI client
-│   ├── ai_providers/         #   Multi-provider AI architecture (GPT/Claude/Wenxin/…)
-│   ├── classis/               #   Domain objects
-│   │   ├── User/              #     Authentication + course data
-│   │   ├── Course/            #     Course model
-│   │   ├── Media/             #     Content handlers (Video/Quiz/Work/Document/Read/Book/Live/BBS)
-│   │   ├── Sign/              #     Check-in
-│   │   ├── SelfException/     #     Custom exceptions
-│   │   └── UserLogger/        #     Log wrapper
-│   └── functions/             #   Pluggable operations
-│       ├── deal_mission/      #     One-click automation
-│       ├── media_download/    #     Resource download
-│       ├── set_log/           #     Activity counter
-│       └── set_time/          #     Timed video playback
-│
-└── gui/                       # PyQt6 GUI layer
-    ├── account_panel.py       #   Account list + toolbar
-    └── course_workshop.py     #   Course workspace (login → queue → progress)
-
-docs/
-└── ai_providers.md            # Multi-model API reference & examples
+├── main.py              # GUI 入口（PyQt6 主窗口）
+├── gui/                 # 图形界面层
+│   ├── account_panel.py    # 账号管理面板（多账号列表、批量运行）
+│   └── course_workshop.py  # 课程工作台（章节选择/任务队列/签到/下载/AI设置）
+├── engine/              # 刷课引擎（纯 HTTP，无浏览器依赖）
+│   ├── cli_entry.py        # CLI 模式入口（Docker 同用）
+│   ├── config.yml          # 主配置文件
+│   ├── tiku.py             # 题库对接（言溪/LIKE/TikuGo/TikuAdapter 轮询）
+│   ├── ai_providers/       # 多 AI 供应商适配（DeepSeek/OpenAI/Claude/文心/阶跃）
+│   ├── exhaustive.py       # 客观题穷举引擎
+│   ├── font_decode/        # 字体反混淆（font-cxsecret 还原）
+│   ├── vision_ocr.py       # 视觉模型 OCR（图片题）
+│   └── course_progress.py  # 章节级进度记忆（SQLite 断点续学）
+├── src/                 # GUI 与引擎的胶水层（账号存储/网络/日志/资源路径）
+├── tools/build_font_map.py # 字体映射表生成工具
+├── tests/               # 265 个 pytest 用例
+├── docs/                # 文档（AI 配置指南、发布清单、推广手册）
+├── build.bat / build.sh # Windows / macOS 一键打包脚本
+├── StarCourse.spec      # PyInstaller 打包配置
+└── Dockerfile           # CLI 模式镜像（不含 PyQt6）
 ```
 
-## Configuration
+---
 
-### AI Answering (`config.json`)
+## ❓ FAQ
 
-| Field | Description | Default |
-|-------|-------------|---------|
-| `default_provider` | Active provider | `deepseek` |
-| `priority` | Provider failover chain (tried in order) | `["deepseek"]` |
-| `timeout` | Unified request timeout (seconds) | `30` |
-| `max_retries` | Retries for timeout / rate-limit / 5xx | `0` |
-| `<provider>.api_key` | Per-provider API key (`wenxin` also needs `secret_key`) | — |
-| `<provider>.base_url` / `model` | Endpoint root / model name | provider defaults |
+**Q1：会不会封号？安全吗？**
+任何自动化工具都无法保证绝对安全。项目内置 UA 池、Client Hints 指纹头、请求抖动与限流退避等反检测措施，但**账号风险需自行承担**。建议：倍速不超过 2.0、并发线程别开太高、避免深夜批量跑。密码输入默认隐藏显示。
 
-Full reference, code examples, and extension guide:
-[docs/ai_providers.md](docs/ai_providers.md).
+**Q2：支持考试吗？**
+**不支持。** 一键完成范围不含考试与测试。支持的任务类型：视频/音频、文档/PPT、阅读、电子书、讨论区回帖、直播回放、超链接、章节测验、课后作业。
 
-### Engine Config (`engine/config.yml`)
+**Q3：图片题（题干/选项是图片）怎么做？**
+开启 `config.yml` 中 `FunConfig.deal-mission.vision-ocr.enable`，并确保 `AIConfig` 里配置了支持视觉的多模态模型（如 OpenAI 的 `gpt-4o`，可用 `vision-ocr.model` 覆盖指定）。图片会先经多模态大模型识别为文本再作答。默认关闭。
 
-| Key | Description | Values |
-|-----|-------------|--------|
-| `FunConfig.deal-mission.video-mode` | Video completion strategy | `0` = instant, `1` = timed |
-| `FunConfig.deal-mission.enable-multi-thread` | Enable multi-threading | `true` / `false` |
-| `FunConfig.deal-mission.max-concurrent-threads` | Max concurrent workers | 1–15 |
-| `TikuConfig` | Question bank and AI settings | — |
-| `SignConfig` | Auto check-in settings | — |
+**Q4：题目显示乱码（字体混淆）怎么办？**
+学习通部分题目用 `font-cxsecret` 动态混淆字体渲染。开启 `font-decode.enable` 前，先运行 `tools/build_font_map.py` 生成字形映射表（`data/font_map_table.json`）；映射表缺失时会自动降级返回原文，不会报错。
 
-## Architecture
+**Q5：AI 的 API Key 配在哪？**
+两处任选：① GUI 工作台 →「AI 模型设置…」，图形化配置 DeepSeek / OpenAI / Claude / 文心 / 阶跃星辰的 Key、模型与容灾链，写入 `config.json` 即时生效；② 直接编辑 `engine/config.yml` 的 `AIConfig` 段。前者优先。
 
-StarCourse uses a **pure HTTP request model** — all interactions with the platform are performed via `requests.Session`, without spawning a browser or Selenium WebDriver. This makes the tool lightweight, fast, and suitable for long-running background operation.
+**Q6：macOS 能用吗？**
+能。Releases 提供 macOS arm64 打包版；也可源码运行（Python 3.11+）。首次运行若被 Gatekeeper 拦截，右键应用图标选「打开」即可。CLI 模式同样支持，还有官方 Dockerfile。
 
-The anti-detection layer (`src/network_utils.py`) maintains a pool of real browser User-Agent strings (Chrome 130–142, Edge, Firefox) matched to the host OS, injects Client Hints (`sec-ch-ua`) headers, and adds randomized jitter between requests to mimic human browsing patterns.
+**Q7：题库 token 哪里来？**
+各题库服务商（言溪 / LIKE / TikuGo）需在对应平台注册获取 token，填到 `TikuConfig.token`；也可以自建 [TikuAdapter](https://github.com/) 题库服务并把地址填到 `tikuadapter_url`。不配题库时可选 AI 答题或本地策略（首选答案/随机选择）。
+
+---
+
+## 🔨 源码构建
+
+项目使用 PyInstaller（onefile + windowed）打包单文件程序：
+
+```bash
+# Windows
+build.bat
+
+# macOS / Linux
+bash build.sh
+```
+
+两个脚本流程一致：安装 `requirements.txt` → 安装 `pyinstaller>=6.0,<7.0` → 按 `StarCourse.spec` 构建，首次约 5–10 分钟，产物在 `dist/`。推送 `v*` 标签会触发 GitHub Actions（`.github/workflows/release.yml`）自动构建 Windows x64 与 macOS 双平台 zip 并发布 Release，详见 [docs/release-checklist.md](docs/release-checklist.md)。
+
+---
+
+## 🙏 致谢
+
+- [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) —— 本项目引擎在上游 chaoxing 项目基础上演进而来，感谢先驱者的接口逆向工作。
+- 字体反混淆的映射表思路来自开源社区对 `font-cxsecret` 混淆机制的公开研究。
+- 感谢言溪 / LIKE / TikuGo 题库与 TikuAdapter 项目提供的答题接口生态。
+
+---
+
+## 📄 许可证
+
+本项目基于 [MIT License](LICENSE) 开源，可自由使用、修改与分发，风险自担。
+
+---
+
+## 📈 Star History
+
+<a href="https://star-history.com/#a-1-pass/StarCourse&Date">
+  <img src="https://api.star-history.com/svg?repos=a-1-pass/StarCourse&type=Date" alt="Star History Chart">
+</a>
+
+---
+
+<details>
+<summary><b>English README (click to expand)</b></summary>
+
+# StarCourse
+
+A desktop automation client for the Chaoxing (超星学习通) online course platform — PyQt6 GUI + pure-HTTP engine (requests only, no Selenium/browser) + multi-provider AI quiz answering.
+
+## Highlights
+
+- **Desktop GUI + multi-account management**: account panel, independent workspace window per account, cookie-based password-free login with automatic password fallback. Most competitors are single-account CLI tools.
+- **Five sign-in types, one click**: normal / QR-code / gesture / location / photo — scan all courses and sign in batch. Unique among similar tools.
+- **Chapter-level targeting**: pick specific chapters in the GUI instead of the whole course.
+- **Two-layer resume**: chapter-level SQLite progress memory + per-video playTime resume; four learning modes (stage-gated / sequential / concurrent / review).
+- **Answering stack**: three third-party question banks (Yanxi / LIKE / TikuGo) + self-hosted TikuAdapter, multi-provider polling fallback; AI answering via DeepSeek / OpenAI / Claude / Wenxin / StepFun with priority-based failover; optional exhaustive engine for objective questions (default off).
+- **Font de-obfuscation** (`font-cxsecret` decoding via fontTools glyph hashing, with `tools/build_font_map.py`) and **vision-LLM OCR** for image-based questions (both default off).
+- Task coverage: video/audio, docs/PPT, reading, e-books, discussion posts, live replays, hyperlinks, chapter quizzes, homework. **Exams are NOT supported.**
+- Distribution: Windows exe / macOS package via Releases, source run (Python 3.11+, `py main.py`), CLI mode (`engine/cli_entry.py`), and Docker (CLI only).
+- Anti-detection: UA pool, Client Hints headers, request jitter, rate-limit backoff. Rotating logs with one-click zip export. 265 pytest cases.
+
+## Quick Start
+
+```bash
+git clone https://github.com/a-1-pass/StarCourse.git
+cd StarCourse
+pip install -r requirements.txt
+py main.py   # or python3 main.py on macOS/Linux
+```
+
+Add an account in the GUI, open its workspace, select a course (and optionally chapters), queue it, and hit Start.
 
 ## Disclaimer
 
-This software is provided for **educational and research purposes only**.
-
-- The authors of this project are not affiliated with, endorsed by, or sponsored by Chaoxing / 超星 / XueXiTong or any of their subsidiaries.
-- Users are solely responsible for complying with the Terms of Service of the platform they interact with.
-- Automated access to educational platforms may violate their acceptable use policies. Use at your own risk.
-- The developers do not store, transmit, or process any user credentials through third-party servers — all authentication happens locally on the user's machine.
-- This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+For learning and technical exchange only. Do not use for any purpose that violates school rules, platform terms of service, or the law. Account risk is your own responsibility; keep request rates moderate.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE).
+[MIT](LICENSE)
 
-## Contributing
-
-Pull requests are welcome. Please open an issue first to discuss significant changes.
+</details>
