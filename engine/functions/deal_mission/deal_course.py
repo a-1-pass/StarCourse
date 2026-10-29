@@ -564,7 +564,10 @@ class DealCourse:
         if (media_type == "hyperlink" or media_module in ("hyperlink", "link", "outerlink")
                 or (media.get("property") or {}).get("url")):
             self.log.info(f"开始处理超链接任务点:{media_name}")
-            finish_status = Hyperlink(media, self.user.headers).do_finish()
+            finish_status = Hyperlink(
+                media, self.user.headers, defaults,
+                courseId=self.course_id, classId=self.class_id
+            ).do_finish()
             if finish_status:
                 self.log.success(f"任务点'{media_name}'完成成功")
             else:

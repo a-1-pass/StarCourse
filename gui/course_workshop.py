@@ -324,6 +324,9 @@ class AISettingsDialog(QDialog):
         self._engine_dir = os.path.join(project_root, "engine")
         # 打包（frozen）模式下 config.json 落用户数据目录，开发期保持 engine/config.json
         self._config_path = self._resolve_config_path()
+        self._fields: dict[str, dict] = {}  # provider key -> {字段名: QLineEdit}
+        self._data = self._load_raw()
+        self._build_ui()
 
     @staticmethod
     def _resolve_config_path() -> str:
@@ -337,10 +340,6 @@ class AISettingsDialog(QDialog):
             return config_json_path()
         except Exception:
             return os.path.join(engine_dir, "config.json")
-
-        self._fields: dict[str, dict] = {}  # provider key -> {字段名: QLineEdit}
-        self._data = self._load_raw()
-        self._build_ui()
 
     # ── 数据读取 ─────────────────────────────────────────
 
@@ -427,8 +426,16 @@ class AISettingsDialog(QDialog):
         self._retry_spin = QSpinBox()
         self._retry_spin.setRange(0, 5)
         self._retry_spin.setValue(int(self._data.get("max_retries", 1) or 0))
+        self._vote_spin = QSpinBox()
+        self._vote_spin.setRange(0, 5)
+        self._vote_spin.setToolTip(
+            "同一题自问次数并取多数答案（self-consistency）。"
+            "0 表示关闭投票，走原容灾链；建议 2~3，越高越准但越慢。"
+        )
+        self._vote_spin.setValue(int(self._data.get("vote_times", 0) or 0))
         g_form.addRow("请求超时:", self._timeout_spin)
         g_form.addRow("失败重试:", self._retry_spin)
+        g_form.addRow("投票次数:", self._vote_spin)
         root.addWidget(g_box)
 
         # 各提供商参数
@@ -531,6 +538,7 @@ class AISettingsDialog(QDialog):
             "priority": priority,
             "timeout": self._timeout_spin.value(),
             "max_retries": self._retry_spin.value(),
+            "vote_times": self._vote_spin.value(),
         }
         for meta in _AI_PROVIDER_META:
             key = meta["key"]

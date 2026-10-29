@@ -218,15 +218,19 @@ class EngineAdapter:
     def run_hyperlink_task(self, task: dict, course_id: str = "") -> bool:
         try:
             from classis.Media.Hyperlink import Hyperlink  # type: ignore[import-not-found]
+            defaults = task.get("defaults", {})
             attachment = task.get("attachment", {})
             props = attachment.get("property", {})
             title = props.get("name", props.get("title", "unknown"))
+            cid = course_id or defaults.get("courseId", "")
+            clazz_id = defaults.get("clazzId", "")
 
             if task.get("is_passed"):
                 log.info("Hyperlink task already complete — skipping")
                 return True
 
-            hyperlink = Hyperlink(attachment, self._user.headers)
+            hyperlink = Hyperlink(attachment, self._user.headers, defaults,
+                                  courseId=cid, classId=clazz_id)
             ok = hyperlink.do_finish()
             log.info(f"Hyperlink '{title}': {'done' if ok else 'failed'}")
             return ok

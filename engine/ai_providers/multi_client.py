@@ -6,6 +6,10 @@
 
 容灾策略：按构造顺序（即配置中的优先级）依次尝试各提供商，
 某提供商未配置则跳过；调用返回空或底层失败时自动切换下一个。
+
+可选多数投票（self-consistency）：当 ``vote_times > 0`` 时，
+对每个已配置提供商重复调用 ``vote_times`` 次，收集所有非空答案后
+取多数；平票时回退到第一个非空答案。
 """
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ import logging
 from typing import List, Optional
 
 from .errors import AIProviderError
+from .voting import majority_vote
 
 logger = logging.getLogger("MultiAIClient")
 
@@ -20,8 +25,9 @@ logger = logging.getLogger("MultiAIClient")
 class MultiAIClient:
     """多提供商优先级容灾客户端。"""
 
-    def __init__(self, providers: List):
+    def __init__(self, providers: List, vote_times: int = 0):
         self._providers = list(providers)
+        self._vote_times = max(0, int(vote_times))
 
     @property
     def providers(self) -> List:
@@ -35,6 +41,8 @@ class MultiAIClient:
 
     def is_configured(self) -> bool:
         return any(p.is_configured() for p in self._providers)
+
+    # ── 容灾链（投票关闭时使用） ──────────────────────────
 
     def _try(self, method: str, question: dict):
         seen_error = False
@@ -66,10 +74,46 @@ class MultiAIClient:
             logger.warning("[MultiAI] 已尝试所有可用提供商，均未取得答案")
         return None
 
+    # ── 多数投票（vote_times > 0 时使用） ─────────────────
+
+    def _vote(self, method: str, question: dict):
+        answers: List = []
+        first_answer = None
+        for provider in self._providers:
+            if not provider.is_configured():
+                continue
+            for _ in range(self._vote_times):
+                try:
+                    result = getattr(provider, method)(question)
+                except AIProviderError as e:
+                    logger.info(
+                        f"[MultiAI] {provider.provider_name} 投票调用异常: {e}"
+                    )
+                    continue
+                if result:
+                    answers.append(result)
+                    if first_answer is None:
+                        first_answer = result
+        winner = majority_vote(answers)
+        if winner is not None:
+            logger.debug(
+                f"[MultiAI] 投票结果: {winner} "
+                f"（共 {len(answers)} 个有效答案）"
+            )
+            return winner
+        if first_answer is not None:
+            logger.debug("[MultiAI] 投票平票，回退到第一个非空答案")
+            return first_answer
+        logger.warning("[MultiAI] 投票未取得任何有效答案")
+        return None
+
     def answer_question(self, question: dict) -> Optional[str]:
+        if self._vote_times > 0:
+            return self._vote("answer_question", question)
         return self._try("answer_question", question)
 
     def answer_question_content(self, question: dict) -> Optional[List[str]]:
+        # 内容接口答案较长，投票意义不大，保持容灾链
         return self._try("answer_question_content", question)
 
     def check_connection(self) -> bool:

@@ -47,7 +47,7 @@ def _candidate_json_paths():
 
 def normalize_json_config(raw: dict) -> dict:
     """将 config.json 的扁平结构转换为内部结构。"""
-    meta_keys = ("default_provider", "priority", "timeout", "max_retries")
+    meta_keys = ("default_provider", "priority", "timeout", "max_retries", "vote_times")
     providers = {}
     meta = {}
     for key, value in (raw or {}).items():
@@ -63,6 +63,7 @@ def normalize_json_config(raw: dict) -> dict:
         "priority": [str(p) for p in priority],
         "timeout": meta.get("timeout", 30),
         "max_retries": meta.get("max_retries", 0),
+        "vote_times": meta.get("vote_times", 0),
         "providers": providers,
     }
 

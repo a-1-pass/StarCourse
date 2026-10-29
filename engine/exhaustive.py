@@ -255,14 +255,26 @@ class ExhaustiveSolver:
         return passed, score
 
     def _is_passed(self, msg: str) -> bool:
-        """优先用调用方的判定回调；无回调时退化为文案判断（机会性）。"""
+        """优先用调用方的判定回调；无回调时退化为文案+分数判断。
+
+        判定规则（无回调时）：
+        - 含「打回」类关键词 → 未通过；
+        - 可解析出分数且分数 < 100 → 未通过（平台上报分数即已评分，
+          满分才算通过；低于满分说明还有提升空间，继续穷举）；
+        - 其余情况视为通过（best-effort）。
+        """
         if self.check_passed is not None:
             try:
                 return bool(self.check_passed())
             except Exception as e:
                 self.log.warning(f"[穷举] 通过判定回调异常: {e}")
                 return False
-        return not self._msg_rejected(msg)
+        if self._msg_rejected(msg):
+            return False
+        score = self._score_from_text(msg)
+        if score is not None and score < 100.0:
+            return False
+        return True
 
     def _sleep(self, seconds: float) -> bool:
         """可中断等待；返回 False 表示等待期间被停止。"""

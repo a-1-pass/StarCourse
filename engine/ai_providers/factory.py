@@ -51,6 +51,8 @@ def build_multi_client(config: dict = None, cache: CacheDAO = None):
     if not names:
         return None
 
+    vote_times = int(config.get("vote_times", 0) or 0)
+
     common = {
         key: config[key] for key in ("timeout", "max_retries") if key in config
     }
@@ -59,4 +61,4 @@ def build_multi_client(config: dict = None, cache: CacheDAO = None):
     for name in names:
         pcfg = {**common, **provider_cfgs.get(name, {})}
         providers.append(build_provider(name, pcfg, cache))
-    return MultiAIClient(providers)
+    return MultiAIClient(providers, vote_times=vote_times)
