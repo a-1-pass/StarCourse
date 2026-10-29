@@ -47,3 +47,7 @@ desktop.ini
 
 # Engine static (no longer shipped)
 engine/static/
+
+# 内部运营文档（不随仓库发布）
+docs/promotion.md
+docs/release-checklist.md
