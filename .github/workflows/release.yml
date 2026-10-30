@@ -1,6 +1,6 @@
 # StarCourse 发版流水线
 # 触发：推送 v* 标签（如 v2.0.0），或手动 workflow_dispatch
-# 产物：Windows / macOS 双平台单文件程序 zip，并自动创建 GitHub Release
+# 产物：Windows / macOS / Linux 三平台单文件程序 zip，并自动创建 GitHub Release
 name: Release
 
 on:
@@ -78,9 +78,46 @@ jobs:
           path: release/StarCourse-macos-arm64.zip
           if-no-files-found: error
 
-  # ── 发布 Release（附自动 changelog） ───────────────────────
+  # ── Linux x64 构建 ────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python 3.11 与系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 x11-utils
+
+      - name: 安装 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖与 PyInstaller
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install -r requirements.txt
+          pip3 install "pyinstaller>=6.0,<7.0"
+
+      - name: 按 spec 构建单文件程序
+        run: python3 -m PyInstaller StarCourse.spec --clean --noconfirm
+
+      - name: 打包 zip 产物
+        run: |
+          mkdir -p release
+          cd dist && zip -9 -y ../release/StarCourse-linux-x64.zip StarCourse
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarCourse-linux-x64
+          path: release/StarCourse-linux-x64.zip
+          if-no-files-found: error
+
+  # ── 发布 Release（附中文 release notes） ───────────────────
   release:
-    needs: [build-windows, build-macos]
+    needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     steps:
       - name: 下载全部构建产物
@@ -93,12 +130,40 @@ jobs:
           mkdir -p release
           cp artifacts/StarCourse-windows-x64/*.zip release/
           cp artifacts/StarCourse-macos-arm64/*.zip release/
+          cp artifacts/StarCourse-linux-x64/*.zip release/
           ls -la release/
+
+      - name: 生成中文 Release Notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## StarCourse ${{ github.ref_name }} 正式发布
+
+          ### 下载方式
+          | 平台 | 文件 | 说明 |
+          |------|------|------|
+          | Windows x64 | `StarCourse-windows-x64.zip` | 解压后双击 `StarCourse.exe` |
+          | macOS arm64 | `StarCourse-macos-arm64.zip` | 解压后运行；如被拦截 → 右键 → 打开 |
+          | Linux x64 | `StarCourse-linux-x64.zip` | 解压后 `./StarCourse` 运行 |
+
+          ### 快速开始
+          1. 下载对应平台的 zip 并解压
+          2. 双击运行（首次启动自动创建配置，无需手动编辑文件）
+          3. 按向导添加学习通账号 → 选课 → 开刷
+
+          ### 注意事项
+          - 首次启动如无保存账号，会自动弹出引导向导
+          - 所有运行参数已内置安全默认值，新手可直接使用
+          - 建议倍速不超过 2.0，并发线程不超过 5
+          - 仅供学习交流，账号风险自担
+
+          ### 更新日志
+          EOF
+          git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 HEAD^)..HEAD >> release_notes.md || true
 
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*.zip
-          generate_release_notes: true   # 基于上一 tag..当前 tag 的提交自动生成 changelog
+          body_path: release_notes.md
           draft: false
           prerelease: false
