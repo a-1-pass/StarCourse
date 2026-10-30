@@ -38,7 +38,25 @@ class FirstRunWizard(QDialog):
             | Qt.WindowType.WindowMinimizeButtonHint
         )
         self._page_idx = 0
+        self._settings = self._load_existing_settings()
         self._build_ui()
+
+    # ── 现有配置预填 ──────────────────────────────────────────
+
+    def _load_existing_settings(self) -> dict:
+        """读取现有 config.yml 作为向导预填值；缺失/读取失败时用安全默认值。"""
+        defaults = {"video-mode": 1, "speed": 1.0, "max-concurrent-threads": 3}
+        try:
+            current = read_settings(config_yml_path())
+        except Exception:
+            return defaults
+        return {
+            "video-mode": current.get("video-mode", defaults["video-mode"]),
+            "speed": current.get("speed", defaults["speed"]),
+            "max-concurrent-threads": current.get(
+                "max-concurrent-threads", defaults["max-concurrent-threads"]
+            ),
+        }
 
     # ── UI 构建 ─────────────────────────────────────────────
 
@@ -243,7 +261,8 @@ class FirstRunWizard(QDialog):
         self._s_video_mode = QComboBox()
         self._s_video_mode.addItem("等时长刷取（推荐，更稳）", 1)
         self._s_video_mode.addItem("立即完成（ fastest ）", 0)
-        self._s_video_mode.setCurrentIndex(0)
+        idx = self._s_video_mode.findData(self._settings["video-mode"])
+        self._s_video_mode.setCurrentIndex(idx if idx >= 0 else 0)
         row1.addWidget(self._s_video_mode)
         row1.addStretch()
         grid.addLayout(row1)
@@ -254,7 +273,7 @@ class FirstRunWizard(QDialog):
         self._s_speed = QDoubleSpinBox()
         self._s_speed.setRange(1.0, 2.0)
         self._s_speed.setSingleStep(0.1)
-        self._s_speed.setValue(1.0)
+        self._s_speed.setValue(min(2.0, max(1.0, float(self._settings["speed"]))))
         self._s_speed.setSuffix(" x")
         row2.addWidget(self._s_speed)
         row2.addWidget(QLabel("<span style='color:#64748b;font-size:12px;'>建议不超过 2.0</span>"))
@@ -265,8 +284,8 @@ class FirstRunWizard(QDialog):
         row3 = QHBoxLayout()
         row3.addWidget(QLabel("<b style='color:#e2e8f0;'>并发线程数:</b>"))
         self._s_threads = QSpinBox()
-        self._s_threads.setRange(1, 10)
-        self._s_threads.setValue(3)
+        self._s_threads.setRange(1, 32)
+        self._s_threads.setValue(min(32, max(1, int(self._settings["max-concurrent-threads"]))))
         row3.addWidget(self._s_threads)
         row3.addWidget(QLabel("<span style='color:#64748b;font-size:12px;'>新手建议 3，稳定后再加</span>"))
         row3.addStretch()
