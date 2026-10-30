@@ -32,7 +32,8 @@ class DealCourse:
                  use_tiku: bool = None,
                  learning_mode: str = "stage",
                  user_id: str = None,
-                 progress_dao=None):
+                 progress_dao=None,
+                 video_retry_rounds: int = None):
         self.user = user
         self.course = course
         self.log = log
@@ -87,6 +88,18 @@ class DealCourse:
             self.max_concurrent_threads = GloConfig.data.get("FunConfig").get("deal-mission").get("max-concurrent-threads", 15)
 
         self.thread_pool = []
+
+        # ── 失败任务点补刷 ──
+        # 首次遍历时视频可能因 403/网络抖动/平台判定延迟而失败；同一轮内有限次补刷，
+        # 避免用户必须再跑一次才能补齐任务点。review 模式（主动重做）不补刷。
+        if video_retry_rounds is None:
+            video_retry_rounds = GloConfig.data.get("FunConfig").get(
+                "deal-mission").get("video-retry-rounds", 2)
+        try:
+            self.video_retry_rounds = max(0, int(video_retry_rounds))
+        except (TypeError, ValueError):
+            self.video_retry_rounds = 2
+        self._failed_media = []
 
         # ── 停止控制（继承快捷操作的可中断能力） ──
         # GUI 停止/暂停按钮通过 EngineAdapter.request_stop() 置位此事件；
@@ -216,6 +229,41 @@ class DealCourse:
         else:
             self._do_single_pass_mode(DealVideo, dao)
 
+        # ── 同一轮内补刷失败任务点 ──
+        # 首次遍历失败的视频（403/网络抖动/平台判定延迟）在这里有限次重试，
+        # 让一次运行尽量把任务点全部补齐，而不是留给用户手动再跑一遍。
+        self._retry_failed_media(DealVideo)
+
+    def _retry_failed_media(self, DealVideo):
+        """对首次遍历失败的任务点进行有限次补刷。
+
+        失败数不再减少（即整轮全部失败）时提前结束，避免无意义的重复请求。
+        review 模式是主动重做，不参与补刷。
+        """
+        if self.learning_mode == self.MODE_REVIEW or self.video_retry_rounds <= 0:
+            return
+
+        for round_idx in range(self.video_retry_rounds):
+            if not self._failed_media:
+                return
+            if self._check_stopped("补刷轮次"):
+                return
+
+            batch, self._failed_media = self._failed_media, []
+            self.log.warning(
+                f"🔁 第 {round_idx + 1}/{self.video_retry_rounds} 轮补刷："
+                f"{len(batch)} 个未完成任务点")
+            for media, attach_item, mission_item in batch:
+                if self._check_stopped("补刷任务点"):
+                    return
+                ok, _name = self._process_media(media, attach_item, mission_item, DealVideo)
+                if not ok:
+                    self._failed_media.append((media, attach_item, mission_item))
+
+        if self._failed_media:
+            self.log.warning(
+                f"仍有 {len(self._failed_media)} 个任务点补刷失败，请稍后重新运行以继续")
+
     # ── 闯关模式：任务点循环重拉 + 章节严格门禁 ──
     def _do_stage_mode(self, DealVideo, dao=None):
         """闯关模式核心实现。
@@ -277,6 +325,15 @@ class DealCourse:
                             continue
 
                         ok, name = self._process_media(media, attach_item, mission_item, DealVideo)
+                        # 闯关模式下任务点失败会直接触发章节门禁、跳过后续全部章节；
+                        # 先在同一位置有限次补试，只有持续失败才真正门禁
+                        retried = 0
+                        while not ok and retried < self.video_retry_rounds:
+                            if self._check_stopped(f"任务点'{name}'补试"):
+                                break
+                            retried += 1
+                            self.log.warning(f"   任务点'{name}'首次处理失败，第{retried}次补试...")
+                            ok, name = self._process_media(media, attach_item, mission_item, DealVideo)
                         processed_object_ids.add(oid)
                         new_found = True
                         chapter_processed_count += 1
@@ -379,6 +436,7 @@ class DealCourse:
                     completed_tasks += 1
                     if not ok:
                         chapter_failed = True
+                        self._failed_media.append((media, attach_item, mission_item))
                     if total_tasks > 0:
                         progress = int((completed_tasks / total_tasks) * 50)
                         progress_bar = "[" + "█" * progress + "░" * (50 - progress) + "]"
@@ -474,16 +532,17 @@ class DealCourse:
                     _video.speed = self.speed
                     if self.speed > 1.0:
                         self.log.info(f"   倍速: {self.speed}x")
-                    _thread = threading.Thread(
-                        target=DealVideo.run_video,
-                        args=(_video, self.user, self.log),
-                        kwargs={"stop_event": self._stop_event})
-                    if self.single_thread:
+                    if self.single_thread or self.learning_mode == self.MODE_STAGE:
+                        # 闯关模式必须同步等待视频完成：若异步启动，重拉章节时视频还没刷完，
+                        # 章节会被提前判 done，刚解锁的后续任务点不会被发现，导致一次刷取漏任务点。
                         self.log.info(f"   模式: 单线程顺序刷取")
-                        _thread.start()
-                        _thread.join()
-                        finish_status = True
+                        finish_status = bool(DealVideo.run_video(
+                            _video, self.user, self.log, stop_event=self._stop_event))
                     else:
+                        _thread = threading.Thread(
+                            target=DealVideo.run_video,
+                            args=(_video, self.user, self.log),
+                            kwargs={"stop_event": self._stop_event})
                         self.thread_pool = [t for t in self.thread_pool if t.is_alive()]
                         while len(self.thread_pool) >= self.max_concurrent_threads:
                             if self.is_stopped:
@@ -496,6 +555,9 @@ class DealCourse:
                         self.log.info(f"   已启动: '{media_name}'")
                         _thread.start()
                         self._interruptible_sleep(random.random() + 0.5)
+                        # 已成功启动线程即视为在跑：返回 False 会被记为失败并触发补刷，
+                        # 造成同一视频重复提交
+                        finish_status = True
             return finish_status, media_name
 
         if media_type == "document":

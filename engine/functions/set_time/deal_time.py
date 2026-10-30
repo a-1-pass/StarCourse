@@ -25,7 +25,12 @@ class DealVideo:
             video._stop_event = stop_event
 
         log.info(f"[{thread_name}] 开始处理视频: {video.name}")
-        return video.study(all_time=all_time, log=log)
+        try:
+            return bool(video.study(all_time=all_time, log=log))
+        except Exception as e:
+            # 线程内未捕获异常会让任务点静默丢失，这里兜底记录并返回失败
+            log.error(f"[{thread_name}] 视频 '{video.name}' 刷取异常: {e}")
+            return False
 
     @staticmethod
     def run_live(live: Live, user, log, stop_event=None):

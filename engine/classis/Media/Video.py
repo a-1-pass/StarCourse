@@ -25,6 +25,39 @@ SPEED_MIN = 1.0
 SPEED_MAX = 2.0
 SPEED_DEFAULT = 1.0
 
+# 到达目标时长后，平台仍不判定通过时的最大补报次数
+FINISH_MAX_RETRIES = 3
+
+
+def should_give_up_finish(finish_reports: int, max_retries: int = FINISH_MAX_RETRIES) -> bool:
+    """到达目标时长后仍未被判定通过时，是否应停止补报并放弃本轮。
+
+    旧逻辑在 100% 后无上限重复上报，会让单个视频永久占用刷取线程，
+    顺序/闯关模式下后续任务点因此全部处理不到。补报次数达到上限即放弃，
+    交给同一轮内的失败任务点补刷。
+    """
+    return finish_reports >= max_retries
+
+
+def normalize_play_time(raw, target_duration):
+    """把状态接口返回的 playTime 归一化为秒，并钳制到 [0, target_duration]。
+
+    平台可能返回毫秒（如 300000），也可能返回秒；超过目标时长的整数值按毫秒处理。
+    无法解析时返回 None，调用方保留原进度。
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value:  # NaN
+        return None
+    if value < 0:
+        return 0.0
+    target = max(0.0, float(target_duration or 0.0))
+    if value > target:
+        value = value / 1000.0
+    return max(0.0, min(target, value))
+
 
 def resolve_speed(config_data=None) -> float:
     """解析视频倍速配置。
@@ -283,7 +316,7 @@ class Video(Media):
                     continue
                 if resp.status_code == 200:
                     loguru.logger.trace(resp.text)
-                    return resp.json()["isPassed"], 200
+                    return bool(resp.json().get("isPassed", False)), 200
                 elif resp.status_code == 403:
                     loguru.logger.warning("出现403报错, 正常尝试切换rt")
                 else:
@@ -294,7 +327,7 @@ class Video(Media):
 
         if resp.status_code == 200:
             loguru.logger.trace(resp.text)
-            return resp.json()["isPassed"], 200
+            return bool(resp.json().get("isPassed", False)), 200
 
         elif resp.status_code == 403:
             loguru.logger.debug(
@@ -389,15 +422,26 @@ class Video(Media):
         is_passed = False
         forbidden_retry = 0
         max_forbidden_retry = 2
+        # 到达目标时长后的补报计数：平台迟迟不判定通过时，必须在上限内放弃，
+        # 否则单个视频会永久占用线程，后续任务点全部处理不到
+        finish_reports = 0
 
         while not is_passed:
             if self._stopped():
                 self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
                 return False
-            if play_time - last_log_time >= wait_time or int(play_time) == target_duration:
+            at_target = int(play_time) >= int(target_duration)
+            if at_target and should_give_up_finish(finish_reports):
+                self._log(log, "warning",
+                          f"视频 '{self.name}' 到达目标时长后仍未判定通过，"
+                          f"放弃本轮（已补报 {finish_reports} 次）")
+                return False
+            if at_target or play_time - last_log_time >= wait_time:
                 is_passed, state = self._video_progress_log(
                     dtoken, target_duration, int(play_time), _isdrag=3, headers=headers
                 )
+                if at_target:
+                    finish_reports += 1
 
                 if state == 403:
                     if forbidden_retry >= max_forbidden_retry:
@@ -414,7 +458,11 @@ class Video(Media):
                         dtoken = refreshed_meta.get("dtoken", dtoken)
                         duration = refreshed_meta.get("duration", duration)
                         target_duration = duration if all_time == 0 else min(int(all_time) * 60, duration)
-                        play_time = refreshed_meta.get("playTime", play_time)
+                        # 状态接口的 playTime 可能是毫秒，直接赋值会让上报参数失真
+                        normalized_play_time = normalize_play_time(
+                            refreshed_meta.get("playTime"), target_duration)
+                        if normalized_play_time is not None:
+                            play_time = normalized_play_time
                         loguru.logger.debug(f"刷新后 dtoken={dtoken}, duration={duration}, play_time={play_time}")
                         continue
 

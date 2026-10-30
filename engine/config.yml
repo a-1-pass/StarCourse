@@ -55,6 +55,7 @@ FunConfig:
     # 注意：并发数不由独立字段配置，实际由上方 enable-multi-thread / max-concurrent-threads 控制
     learning-mode: stage  # 学习模式: stage=闯关(任务点循环重拉+章节门禁) / sequential=顺序 / concurrent=并发 / review=复习
     progress-persistence: true  # 是否启用章节级进度记忆（重启续学）
+    video-retry-rounds: 5  # 首次遍历失败任务点（如视频 403/判定延迟）在同一轮内的补刷轮数，0 为关闭
     exhaustive:  # 客观题（单选/判断）答案穷举验证：应对「正确率过低则打回重做」
       enable: false  # 默认关闭；开启后对单选/判断题反复提交直到整卷通过
       interval: 3.0  # 两次提交的最小间隔（秒），防止触发平台风控
