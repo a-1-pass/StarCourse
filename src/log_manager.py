@@ -55,6 +55,11 @@ def _log_directory() -> Path:
     return log_dir
 
 
+def log_directory() -> Path:
+    """公开的日志目录（引擎侧 loguru 落盘也写到这里，便于统一导出）。"""
+    return _log_directory()
+
+
 def _purge_stale_logs(directory: Path, max_days: int = _MAX_AGE_DAYS, max_files: int = _MAX_BACKUPS) -> None:
     """Delete logs older than *max_days*; keep at most *max_files* most-recent ones."""
     try:

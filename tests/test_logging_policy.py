@@ -66,15 +66,29 @@ def test_startup_message_is_a_single_concise_line(tmp_path):
 
 
 def test_engine_loguru_handler_defaults_to_info():
-    """引擎侧 loguru 只保留 INFO 及以上，DEBUG 刷屏被屏蔽。"""
+    """引擎侧 loguru：控制台保留 INFO 及以上，另写一份 WARNING+ 到文件（便于无控制台时诊断）。"""
     from loguru import logger
 
     from src.engine_adapter import configure_engine_logging
 
     configure_engine_logging()
     levels = sorted(h.levelno for h in logger._core.handlers.values())
-    assert levels == [logging.INFO]
+    assert levels == [logging.INFO, logging.WARNING]
     assert logger.level("INFO").no == logging.INFO
+
+
+def test_engine_loguru_warning_lands_in_file(tmp_path, monkeypatch):
+    """打包后无控制台，引擎侧 WARNING/ERROR 必须落盘，否则故障无法排查。"""
+    from loguru import logger
+
+    import src.engine_adapter as ea
+
+    monkeypatch.setattr("src.log_manager.log_directory", lambda: tmp_path)
+    ea.configure_engine_logging()
+    logger.warning("engine-probe-warning")
+
+    written = "\n".join(p.read_text(encoding="utf-8") for p in tmp_path.glob("engine_*.log"))
+    assert "engine-probe-warning" in written
 
 
 def test_engine_logging_configuration_is_idempotent():
@@ -85,7 +99,7 @@ def test_engine_logging_configuration_is_idempotent():
 
     configure_engine_logging()
     configure_engine_logging()
-    assert len(logger._core.handlers) == 1
+    assert len(logger._core.handlers) == 2
 
 
 @pytest.fixture(autouse=True)

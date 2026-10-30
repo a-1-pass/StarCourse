@@ -59,6 +59,23 @@ def normalize_play_time(raw, target_duration):
     return max(0.0, min(target, value))
 
 
+def restart_play_time_if_at_target(play_time, target_duration):
+    """进度已到终点但平台仍未判定通过时，返回 0 表示从头重新上报。
+
+    平台按上报进度累计学时；继续停在已上报过的终点重复上报不会产生新增量，
+    视频会永远判不通过（常见于被打回的任务点）。其他开源实现的做法是
+    「进度已到终点却未通过：从头重报」，否则会一直卡在终点。
+    """
+    try:
+        target = float(target_duration or 0)
+        value = float(play_time or 0)
+    except (TypeError, ValueError):
+        return play_time
+    if target > 0 and value >= target:
+        return 0.0
+    return value
+
+
 def resolve_speed(config_data=None) -> float:
     """解析视频倍速配置。
 
@@ -122,6 +139,9 @@ class Video(Media):
         self.class_id = class_id or self.defaults.get("clazzId", "")
         self.userid = userid or self.defaults.get("userid", "")
         self.cpi = self.defaults.get("cpi", "")
+        # 最近一次进度上报的原始响应，供失败诊断时输出到日志
+        self._last_report_text = ""
+        self._last_report_params = {}
         # 可选停止事件（由刷课引擎注入；None 时行为与历史完全一致）
         self._stop_event = None
         # 倍速（由刷课引擎按 config.yml 的 speed 注入，仅 video-mode 1 等时长刷取生效；
@@ -316,6 +336,7 @@ class Video(Media):
                     continue
                 if resp.status_code == 200:
                     loguru.logger.trace(resp.text)
+                    self._remember_report(params, resp.text)
                     return bool(resp.json().get("isPassed", False)), 200
                 elif resp.status_code == 403:
                     loguru.logger.warning("出现403报错, 正常尝试切换rt")
@@ -327,6 +348,7 @@ class Video(Media):
 
         if resp.status_code == 200:
             loguru.logger.trace(resp.text)
+            self._remember_report(params, resp.text)
             return bool(resp.json().get("isPassed", False)), 200
 
         elif resp.status_code == 403:
@@ -354,7 +376,7 @@ class Video(Media):
             return None
 
         if resp.status_code != 200:
-            loguru.logger.debug("刷新视频状态返回码异常: {}" % resp.status_code)
+            loguru.logger.debug("刷新视频状态返回码异常: {}", resp.status_code)
             loguru.logger.debug(resp.text)
             return None
 
@@ -368,6 +390,13 @@ class Video(Media):
             return data
 
         return None
+
+    def _remember_report(self, params: dict, body: str):
+        """记录最近一次上报参数与响应，失败时随日志输出便于对照排查。"""
+        self._last_report_params = {
+            k: params.get(k) for k in ("jobid", "objectId", "playingTime", "duration", "isdrag")
+        }
+        self._last_report_text = (body or "")[:300]
 
     def _log(self, log, level: str, msg: str):
         if log:
@@ -399,7 +428,13 @@ class Video(Media):
         play_time = int(self.attachment.get("playTime", 0)) // 1000
         play_time = min(play_time, target_duration)
 
-        if play_time > 0:
+        if play_time >= target_duration:
+            # 附件记录的位置已在终点但任务点仍未通过（被打回），
+            # 继续从终点上报不会产生新的学时增量，必须从头重新上报
+            self._log(log, "warning",
+                      f"视频 '{self.name}' 进度已在终点({int(play_time)}秒)但平台未判定通过，从头重新上报")
+            play_time = restart_play_time_if_at_target(play_time, target_duration)
+        elif play_time > 0:
             self._log(log, "info", f"视频 '{self.name}' 从 {int(play_time)} 秒处继续刷取")
 
         self._log(log, "info", f"视频 '{self.name}' 总时长: {duration}秒, 需要刷取: {target_duration}秒")
@@ -432,9 +467,17 @@ class Video(Media):
                 return False
             at_target = int(play_time) >= int(target_duration)
             if at_target and should_give_up_finish(finish_reports):
+                # 先复核平台状态：判定的落地可能滞后于上报响应，避免误报失败
+                refreshed = self._refresh_video_status(self.dtype)
+                if refreshed and refreshed.get("isPassed"):
+                    self._log(log, "success", f"视频 '{self.name}' 刷取完成！（状态复核确认通过）")
+                    return True
+                body = f"；平台响应: {self._last_report_text}" if self._last_report_text else ""
                 self._log(log, "warning",
                           f"视频 '{self.name}' 到达目标时长后仍未判定通过，"
-                          f"放弃本轮（已补报 {finish_reports} 次）")
+                          f"放弃本轮（已补报 {finish_reports} 次, HTTP {state}, "
+                          f"jobid={self.jobid}, playingTime={int(play_time)}/{target_duration}"
+                          f"{body}）")
                 return False
             if at_target or play_time - last_log_time >= wait_time:
                 is_passed, state = self._video_progress_log(
@@ -462,7 +505,7 @@ class Video(Media):
                         normalized_play_time = normalize_play_time(
                             refreshed_meta.get("playTime"), target_duration)
                         if normalized_play_time is not None:
-                            play_time = normalized_play_time
+                            play_time = restart_play_time_if_at_target(normalized_play_time, target_duration)
                         loguru.logger.debug(f"刷新后 dtoken={dtoken}, duration={duration}, play_time={play_time}")
                         continue
 

@@ -23,11 +23,27 @@ log = logging.getLogger("starcourse.adapter")
 
 
 def configure_engine_logging() -> None:
-    """统一引擎侧 loguru 输出：仅保留 INFO 及以上，屏蔽 DEBUG 刷屏。"""
+    """统一引擎侧 loguru 输出：控制台 INFO+，并落盘 WARNING+。
+
+    打包为窗口程序（console=False）后 stderr 不可见，若不写文件，
+    引擎内部的错误（视频状态获取失败、上报异常等）将完全丢失。
+    """
     from loguru import logger
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")
+    try:
+        from src.log_manager import log_directory
+
+        logger.add(
+            str(log_directory() / "engine_{time:YYYY-MM-DD}.log"),
+            level="WARNING",
+            rotation="10 MB",
+            retention="7 days",
+            encoding="utf-8",
+        )
+    except Exception as exc:  # 日志目录不可写时不影响主流程
+        print(f"engine log sink disabled: {exc}", file=sys.stderr)
 
 
 @dataclass

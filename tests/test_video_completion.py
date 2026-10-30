@@ -24,6 +24,7 @@ from classis.Media.Video import (  # noqa: E402
     FINISH_MAX_RETRIES,
     Video,
     normalize_play_time,
+    restart_play_time_if_at_target,
     should_give_up_finish,
 )
 
@@ -43,7 +44,7 @@ def _video(play_time_ms: int = 0, duration: int = 10) -> Video:
 
 
 def _patch_video_io(monkeypatch, video: Video, progress_results, duration=10):
-    """替换 study() 的所有 IO：状态、进度上报、等待。"""
+    """替换 study() 的所有 IO：状态、进度上报、等待、进度推进。"""
     monkeypatch.setattr(
         video, "get_status",
         lambda *a, **k: {"status": "success", "duration": duration, "dtoken": "dt"})
@@ -58,6 +59,9 @@ def _patch_video_io(monkeypatch, video: Video, progress_results, duration=10):
 
     monkeypatch.setattr(video, "_video_progress_log", fake_progress)
     monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
+    # 每次循环直接跳到目标时长，避免依赖真实时间推进
+    monkeypatch.setattr(video_mod, "advance_play_time",
+                        lambda _p, _dt, _s, target: float(target))
     monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
     return calls
 
@@ -88,6 +92,111 @@ class TestFinishRetryBudget:
         _patch_video_io(monkeypatch, video, [(False, 200), (False, 200), (True, 200)])
 
         assert video.study() is True
+
+
+# ════════════════════════════════════════════════════════════
+# 进度已到终点但未通过：从头重新上报
+# ════════════════════════════════════════════════════════════
+
+class TestRestartAtTarget:
+    """附件里的 playTime 已到终点但 isPassed=false 时，不能继续停在终点。
+
+    平台按上报进度累计学时，停在已上报过的终点重复上报不会产生新增量，
+    会永远判不通过。其他开源实现（如 ZHE-you/Chaoxingxuexitong-ayto）的做法是
+    「进度已到终点却未通过（常见于被打回）：从头重报」。
+    """
+
+    def test_helper_resets_at_target(self):
+        assert restart_play_time_if_at_target(10, 10) == 0
+        assert restart_play_time_if_at_target(700, 600) == 0
+        assert restart_play_time_if_at_target(5, 10) == 5
+        assert restart_play_time_if_at_target(0, 10) == 0
+
+    def test_helper_keeps_value_without_target(self):
+        assert restart_play_time_if_at_target(5, 0) == 5
+        assert restart_play_time_if_at_target(5, None) == 5
+
+    def test_study_restarts_from_zero_when_resume_position_is_at_target(self, monkeypatch):
+        """被打回的视频首次正常上报必须从小进度开始，而不是继续报终点。"""
+        video = _video(play_time_ms=10 * 1000, duration=10)
+        reported = []
+
+        monkeypatch.setattr(
+            video, "get_status",
+            lambda *a, **k: {"status": "success", "duration": 10, "dtoken": "dt"})
+        monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
+        # 每轮只推进 1 秒，确保能观察到从小到大的上报序列
+        monkeypatch.setattr(video_mod, "advance_play_time",
+                            lambda p, _dt, _s, target: min(float(target), p + 1))
+        monkeypatch.setattr(video_mod, "random", SimpleNamespace(uniform=lambda a, b: 0))
+        monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
+
+        def fake_progress(_dtoken, _duration, playing_time, *_a, **_k):
+            reported.append(playing_time)
+            return (playing_time < 10), 200
+
+        monkeypatch.setattr(video, "_video_progress_log", fake_progress)
+
+        assert video.study() is True
+        # 前两次是 isdrag=4 的瞬间完成尝试（终点），之后必须从头开始
+        assert reported[:2] == [10, 10]
+        assert reported[2] < 10
+
+
+# ════════════════════════════════════════════════════════════
+# 放弃前的状态复核与诊断信息
+# ════════════════════════════════════════════════════════════
+
+class _Recorder:
+    def __init__(self):
+        self.messages = []
+
+    def info(self, m): self.messages.append(("info", m))
+    def warning(self, m): self.messages.append(("warning", m))
+    def error(self, m): self.messages.append(("error", m))
+    def success(self, m): self.messages.append(("success", m))
+
+
+class TestFinishDiagnostics:
+    def _buffer_video(self, monkeypatch, refresh_result=None):
+        video = _video(play_time_ms=10 * 1000, duration=10)
+        rec = _Recorder()
+
+        monkeypatch.setattr(
+            video, "get_status",
+            lambda *a, **k: {"status": "success", "duration": 10, "dtoken": "dt"})
+
+        def fake_progress(*_a, **_k):
+            video._last_report_text = '{"isPassed":false,"msg":"学习时长异常"}'
+            video._last_report_params = {"jobid": "job", "playingTime": 10, "duration": 10}
+            return False, 200
+
+        monkeypatch.setattr(video, "_video_progress_log", fake_progress)
+        monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
+        monkeypatch.setattr(video_mod, "advance_play_time",
+                            lambda _p, _dt, _s, target: float(target))
+        monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
+        monkeypatch.setattr(video, "_refresh_video_status", lambda *a, **k: refresh_result)
+        return video, rec
+
+    def test_give_up_logs_platform_response(self, monkeypatch):
+        """放弃时必须把平台响应写进日志，否则无法定位「一直失败」的原因。"""
+        video, rec = self._buffer_video(monkeypatch)
+
+        assert video.study(log=rec) is False
+        warnings = [m for lvl, m in rec.messages if lvl == "warning"]
+        joined = "\n".join(warnings)
+        assert "学习时长异常" in joined
+        assert "jobid=job" in joined
+
+    def test_give_up_checks_status_before_failing(self, monkeypatch):
+        """补报用尽前先刷新状态：平台其实已判定通过时不应误报失败。"""
+        video, rec = self._buffer_video(
+            monkeypatch,
+            refresh_result={"status": "success", "isPassed": True, "duration": 10},
+        )
+
+        assert video.study(log=rec) is True
 
 
 # ════════════════════════════════════════════════════════════
