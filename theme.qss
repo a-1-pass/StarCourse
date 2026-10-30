@@ -357,6 +357,15 @@ QSplitter#main_splitter::handle {
 }
 QSplitter#main_splitter::handle:hover { background: #484f58; }
 
+/* 侧栏滚动容器：窗口变小时纵向滚动，不撑破屏幕 */
+QScrollArea#pane_scroll {
+    background: transparent;
+    border: none;
+}
+QScrollArea#pane_scroll > QWidget > QWidget {
+    background: transparent;
+}
+
 QWidget#info_widget {
     background: #161b22;
     border-bottom: 1px solid #30363d;

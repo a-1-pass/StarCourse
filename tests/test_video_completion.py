@@ -224,6 +224,8 @@ class TestStageModeSyncVideo:
         monkeypatch.setattr(dc_mod, "threading",
                             SimpleNamespace(Thread=_FakeThread, Event=threading.Event))
         runner = _make_runner(learning_mode)
+        # 固定为等时长分支，避免本机 config.yml 的 video-mode=0 让测试走真实网络
+        runner.video_mode = 1
 
         class FakeDealVideo:
             calls = []

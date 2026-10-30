@@ -23,7 +23,7 @@ class _AddProfileDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("添加账号")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(360)
         self.resize(460, 360)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
         self._build()

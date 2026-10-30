@@ -22,6 +22,8 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QStatusBar, QVBoxLayout, QWidget,
 )
 
+from src.ui_layout import fit_size
+
 
 class AppMainWindow(QMainWindow):
     """主应用窗口"""
@@ -31,11 +33,25 @@ class AppMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("StarCourse — 超星学习通助手")
-        self.setMinimumSize(900, 600)
-        self.resize(1024, 700)
+        self.setMinimumSize(760, 520)
+        self._fit_window(1024, 700)
         self._detail_dialogs: dict[str, object] = {}
         self._build_ui()
         self._load_theme()
+
+    def _fit_window(self, width: int, height: int):
+        """初始尺寸不超过当前屏幕可用区域（适配小屏与高 DPI 缩放）。"""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(width, height)
+            return
+        avail = screen.availableGeometry()
+        width, height = fit_size(avail.width(), avail.height(), width, height)
+        self.resize(width, height)
+        self.move(
+            avail.x() + (avail.width() - width) // 2,
+            avail.y() + (avail.height() - height) // 2,
+        )
 
     # ---- 界面构建 ----
     def _build_ui(self):

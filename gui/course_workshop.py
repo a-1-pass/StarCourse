@@ -14,11 +14,12 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QProgressBar, QPushButton, QSplitter, QSpinBox, QStackedWidget,
+    QProgressBar, QPushButton, QScrollArea, QSplitter, QSpinBox, QStackedWidget,
     QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from gui.quick_tasks import TASK_TYPE_LABELS
+from src.ui_layout import fit_size
 from src.account_store import AccountProfile
 from src.log_manager import export_logs, log
 from src.runtime_settings import config_yml_path, read_settings, save_settings
@@ -426,7 +427,7 @@ class AISettingsDialog(QDialog):
         chain_box = QGroupBox("调用优先级（勾选启用，可用上移/下移调整顺序）")
         chain_l = QVBoxLayout(chain_box)
         self._chain_list = QListWidget()
-        self._chain_list.setMinimumHeight(120)
+        self._chain_list.setMinimumHeight(90)
         saved_priority = self._data.get("priority")
         if not isinstance(saved_priority, list) or not saved_priority:
             saved_priority = [
@@ -645,7 +646,8 @@ class CourseWorkshop(QDialog):
         self._dl_all_items: list[dict] = []
 
         self.setWindowTitle(f"StarCourse — {profile.username}")
-        self.resize(1250, 780)
+        self.setMinimumSize(520, 420)
+        self._fit_window(1250, 780)
         self.setModal(False)
         self.setWindowFlags(
             self.windowFlags()
@@ -717,6 +719,20 @@ class CourseWorkshop(QDialog):
 
         self._switch_mode("auto")
 
+    def _fit_window(self, width: int, height: int):
+        """初始尺寸不超过屏幕可用区域（适配小屏 / 高 DPI，窗口居中）。"""
+        screen = self.screen()
+        if screen is None:
+            self.resize(width, height)
+            return
+        avail = screen.availableGeometry()
+        width, height = fit_size(avail.width(), avail.height(), width, height)
+        self.resize(width, height)
+        self.move(
+            avail.x() + (avail.width() - width) // 2,
+            avail.y() + (avail.height() - height) // 2,
+        )
+
     def _open_ai_settings(self):
         """打开多模型 AI 设置；保存成功后刷新就绪状态提示。"""
         dlg = AISettingsDialog(self)
@@ -758,14 +774,28 @@ class CourseWorkshop(QDialog):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("main_splitter")
-        splitter.addWidget(self._build_left_pane())
-        splitter.addWidget(self._build_middle_pane())
+        splitter.addWidget(self._scroll_wrap(self._build_left_pane()))
+        splitter.addWidget(self._scroll_wrap(self._build_middle_pane()))
         splitter.addWidget(self._build_right_pane())
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 1)
         splitter.setSizes([340, 300, 380])
         outer.addWidget(splitter, 1)
 
         self._refresh_summary()
         return w
+
+    @staticmethod
+    def _scroll_wrap(widget: QWidget) -> QScrollArea:
+        """把侧栏包进滚动区，窗口高度不足时出现纵向滚动而不是撑破屏幕。"""
+        area = QScrollArea()
+        area.setObjectName("pane_scroll")
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        area.setWidget(widget)
+        return area
 
     def _refresh_summary(self):
         """把当前课程、学习模式、并发数与答题方式同步到顶部概览。"""
@@ -804,7 +834,7 @@ class CourseWorkshop(QDialog):
         self._course_tbl.setColumnWidth(0, 36)
         self._course_tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._course_tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._course_tbl.setMinimumHeight(150)
+        self._course_tbl.setMinimumHeight(110)
         self._course_tbl.itemSelectionChanged.connect(self._on_course_picked)
         self._course_tbl.cellDoubleClicked.connect(self._on_course_double_click)
         cl.addWidget(self._course_tbl)
@@ -828,7 +858,7 @@ class CourseWorkshop(QDialog):
 
         self._chapter_list = QListWidget()
         self._chapter_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self._chapter_list.setMinimumHeight(90)
+        self._chapter_list.setMinimumHeight(70)
         chl.addWidget(self._chapter_list)
         v.addWidget(ch_box)
 
@@ -1018,7 +1048,7 @@ class CourseWorkshop(QDialog):
         q_box = QGroupBox("任务队列")
         ql = QVBoxLayout(q_box)
         self._queue_list = QListWidget()
-        self._queue_list.setMinimumHeight(180)
+        self._queue_list.setMinimumHeight(120)
         ql.addWidget(self._queue_list)
 
         rm_btn = QPushButton("移除选中项")
@@ -1085,7 +1115,7 @@ class CourseWorkshop(QDialog):
         ll = QVBoxLayout(lg)
         self._log_view = QTextEdit()
         self._log_view.setReadOnly(True)
-        self._log_view.setMinimumHeight(130)
+        self._log_view.setMinimumHeight(100)
         ll.addWidget(self._log_view)
         # 导出日志：打包日志目录为 zip，便于反馈问题时附带
         self._export_log_btn = QPushButton("导出日志")
@@ -1180,7 +1210,7 @@ class CourseWorkshop(QDialog):
         self._si_table.setColumnWidth(4, 80)
         self._si_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._si_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._si_table.setMinimumHeight(200)
+        self._si_table.setMinimumHeight(140)
         v.addWidget(self._si_table)
 
         # 签到日志
@@ -1205,12 +1235,12 @@ class CourseWorkshop(QDialog):
         sel_row = QHBoxLayout()
         sel_row.addWidget(QLabel("选择课程:"))
         self._dl_course_cb = QComboBox()
-        self._dl_course_cb.setMinimumWidth(250)
+        self._dl_course_cb.setMinimumWidth(160)
         sel_row.addWidget(self._dl_course_cb)
 
         sel_row.addWidget(QLabel("  资源类型:"))
         self._dl_type_filter = QComboBox()
-        self._dl_type_filter.addItems(["全部资源", "媒体文件 (视频/音频)", "课件资料 (PPT/PDF/DOC等)"])
+        self._dl_type_filter.addItems(["全部资源", "视频/音频", "课件资料"])
         self._dl_type_filter.currentIndexChanged.connect(self._on_dl_type_filter_changed)
         sel_row.addWidget(self._dl_type_filter)
 
@@ -1234,14 +1264,14 @@ class CourseWorkshop(QDialog):
         self._dl_table.setColumnWidth(3, 70)
         self._dl_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._dl_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._dl_table.setMinimumHeight(200)
+        self._dl_table.setMinimumHeight(140)
         v.addWidget(self._dl_table)
 
         # 下载控制
         dl_ctrl = QHBoxLayout()
         dl_ctrl.addWidget(QLabel("保存到:"))
         self._dl_dir_le = QLineEdit(os.path.join(os.path.expanduser("~"), "Downloads", "StarCourse"))
-        self._dl_dir_le.setMinimumWidth(300)
+        self._dl_dir_le.setMinimumWidth(200)
         dl_ctrl.addWidget(self._dl_dir_le)
 
         browse_btn = QPushButton("浏览...")
