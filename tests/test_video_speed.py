@@ -22,7 +22,7 @@ class TestResolveSpeed:
         assert resolve_speed({}) == 1.0
         assert resolve_speed({"FunConfig": {}}) == 1.0
         assert resolve_speed({"FunConfig": {"deal-mission": {}}}) == 1.0
-        assert resolve_speed(None) in (1.0, SPEED_DEFAULT)  # 无配置时回退默认
+        assert 1.0 <= resolve_speed(None) <= 2.0  # 无显式配置时回退 config.yml 的 speed
 
     def test_normal_value_passthrough(self):
         assert resolve_speed(_cfg(1.0)) == 1.0

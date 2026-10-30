@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
@@ -33,12 +34,12 @@ class _AddProfileDialog(QDialog):
         layout.setSpacing(16)
 
         heading = QLabel("添加账号")
-        heading.setStyleSheet("color:#2c3e50;font-size:20px;font-weight:bold;")
+        heading.setObjectName("dialog_title")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(heading)
 
         sub = QLabel("输入学习通账号凭据")
-        sub.setStyleSheet("color:#95a5a6;font-size:12px;")
+        sub.setObjectName("dialog_subtitle")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(sub)
 
@@ -126,12 +127,7 @@ class AccountListPanel(QWidget):
     def _make_separator() -> QFrame:
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFrameShadow(QFrame.Shadow.Sunken)
-        sep.setStyleSheet(
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            "stop:0 transparent,stop:0.5 rgba(56,139,253,.2),stop:1 transparent);"
-            "max-height:2px;margin:8px 0;"
-        )
+        sep.setObjectName("account_separator")
         return sep
 
     # ---- 操作 ----
@@ -241,12 +237,12 @@ class AccountListPanel(QWidget):
             self._table.setItem(i, 0, QTableWidgetItem(p.username))
             self._table.setItem(i, 1, QTableWidgetItem(p.nickname or "-"))
             status_map = {
-                "running": ("运行中", Qt.GlobalColor.blue),
-                "done":    ("已完成", Qt.GlobalColor.darkGreen),
-                "failed":  ("失败",   Qt.GlobalColor.red),
-                "idle":    ("空闲",   Qt.GlobalColor.gray),
+                "running": ("运行中", QColor("#58a6ff")),
+                "done":    ("已完成", QColor("#3fb950")),
+                "failed":  ("失败",   QColor("#f85149")),
+                "idle":    ("空闲",   QColor("#8b949e")),
             }
-            text, color = status_map.get(p.status, (p.status, Qt.GlobalColor.gray))
+            text, color = status_map.get(p.status, (p.status, QColor("#8b949e")))
             status_item = QTableWidgetItem(text)
             status_item.setForeground(color)
             self._table.setItem(i, 2, status_item)

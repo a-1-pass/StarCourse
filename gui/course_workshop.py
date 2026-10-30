@@ -8,17 +8,20 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QProgressBar, QPushButton, QSplitter, QSpinBox, QStackedWidget,
     QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from gui.quick_tasks import TASK_TYPE_LABELS
 from src.account_store import AccountProfile
 from src.log_manager import export_logs, log
+from src.runtime_settings import config_yml_path, read_settings, save_settings
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -171,6 +174,44 @@ class _AutomationWorker(QThread):
             self._client.request_stop()
         except Exception:
             pass
+
+
+class _QuickTaskWorker(QThread):
+    """快捷操作执行器：收集指定类型任务点后并发处理。"""
+    log_signal = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, client, course_id, class_id, cpi, task_type,
+                 strategy="first", use_tiku=False, max_workers=5):
+        super().__init__()
+        self._client = client
+        self._cid = course_id
+        self._clid = class_id
+        self._cpi = cpi
+        self._type = task_type
+        self._strategy = strategy
+        self._use_tiku = use_tiku
+        self._max_workers = max_workers
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        from gui.quick_tasks import TASK_TYPE_LABELS, run_quick_action
+        label = TASK_TYPE_LABELS.get(self._type, self._type)
+        try:
+            ok, done, total = run_quick_action(
+                self._client, self._cid, self._clid, self._cpi, self._type,
+                strategy=self._strategy, use_tiku=self._use_tiku,
+                max_workers=self._max_workers,
+                on_log=self.log_signal.emit,
+                should_stop=self._stop.is_set,
+            )
+            self.finished.emit(ok, f"已处理 {done}/{total} 个{label}任务")
+        except Exception as exc:
+            self.log_signal.emit(f"[错误] {exc}")
+            self.finished.emit(False, f"执行出错: {exc}")
 
 
 class _SignInScanWorker(QThread):
@@ -696,6 +737,24 @@ class CourseWorkshop(QDialog):
         w = QWidget()
         outer = QVBoxLayout(w)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        # 当前运行配置概览：课程 / 学习模式 / 并发 / 答题方式
+        summary = QFrame()
+        summary.setObjectName("info_widget")
+        sl = QHBoxLayout(summary)
+        sl.setContentsMargins(14, 8, 14, 8)
+        sl.setSpacing(18)
+        self._sum_course = QLabel("课程: 未选择")
+        self._sum_course.setObjectName("summary_primary")
+        self._sum_mode = QLabel("")
+        self._sum_concurrency = QLabel("")
+        self._sum_answer = QLabel("")
+        for lbl in (self._sum_course, self._sum_mode,
+                    self._sum_concurrency, self._sum_answer):
+            sl.addWidget(lbl)
+        sl.addStretch()
+        outer.addWidget(summary)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("main_splitter")
@@ -705,7 +764,29 @@ class CourseWorkshop(QDialog):
         splitter.setSizes([340, 300, 380])
         outer.addWidget(splitter, 1)
 
+        self._refresh_summary()
         return w
+
+    def _refresh_summary(self):
+        """把当前课程、学习模式、并发数与答题方式同步到顶部概览。"""
+        if not hasattr(self, "_sum_course"):
+            return
+        course = self._current_course
+        self._sum_course.setText(
+            f"课程: {course.name}" if course else "课程: 未选择")
+        if hasattr(self, "_learning_mode_cb"):
+            self._sum_mode.setText(f"模式: {self._learning_mode_cb.currentText()}")
+        if hasattr(self, "_strategy_cb"):
+            self._sum_answer.setText(f"答题: {self._strategy_cb.currentText()}")
+        try:
+            settings = read_settings(config_yml_path())
+            if not settings.get("enable-multi-thread", True):
+                self._sum_concurrency.setText("并发: 关闭")
+            else:
+                self._sum_concurrency.setText(
+                    f"并发: {settings.get('max-concurrent-threads', 5)} 线程")
+        except Exception:
+            self._sum_concurrency.setText("并发: —")
 
     def _build_left_pane(self) -> QWidget:
         w = QWidget()
@@ -789,6 +870,7 @@ class CourseWorkshop(QDialog):
         self._mode_hint.setStyleSheet("color:#94a3b8;font-size:11px;")
         sgl.addWidget(self._mode_hint)
         self._strategy_cb.currentTextChanged.connect(lambda _: self._refresh_mode_hint())
+        self._strategy_cb.currentTextChanged.connect(lambda _: self._refresh_summary())
 
         # 学习模式选择（闯关 / 顺序 / 并发 / 复习）
         row_lm = QHBoxLayout()
@@ -803,6 +885,8 @@ class CourseWorkshop(QDialog):
             "复习模式：忽略已完成标记，全部重做一遍"
         )
         row_lm.addWidget(self._learning_mode_cb)
+        self._learning_mode_cb.currentIndexChanged.connect(
+            lambda _idx: self._refresh_summary())
         sgl.addLayout(row_lm)
 
         # 进度指示器（章节级进度记忆，选中课程后显示续学起点）
@@ -841,13 +925,42 @@ class CourseWorkshop(QDialog):
         # ── 快捷操作 ──
         qa = QGroupBox("快捷操作")
         qal = QVBoxLayout(qa)
-        qal.setSpacing(4)
+        qal.setSpacing(6)
 
+        # 主操作：整门课程多线程并发刷取
+        row_main = QHBoxLayout()
+        self._concurrent_btn = QPushButton("▶  多线程并发刷课")
+        self._concurrent_btn.setObjectName("start_btn")
+        self._concurrent_btn.setMinimumHeight(34)
+        self._concurrent_btn.setToolTip(
+            "整门课程按并发学习模式执行：章节任务点用多线程同时刷取，\n"
+            "线程数取「运行参数」中的最大并发线程数")
+        self._concurrent_btn.clicked.connect(self._on_action_concurrent_course)
+        self._concurrent_btn.setEnabled(False)
+        row_main.addWidget(self._concurrent_btn)
+
+        self._runtime_settings_btn = QPushButton("运行参数…")
+        self._runtime_settings_btn.setObjectName("detail_btn")
+        self._runtime_settings_btn.setMinimumHeight(34)
+        self._runtime_settings_btn.setToolTip(
+            "修改 engine/config.yml 中的视频模式、倍速、并发数、覆盖率等运行参数")
+        self._runtime_settings_btn.clicked.connect(self._open_runtime_settings)
+        row_main.addWidget(self._runtime_settings_btn)
+
+        self._concurrency_hint = QLabel("")
+        self._concurrency_hint.setStyleSheet("color:#8b949e;font-size:11px;")
+        row_main.addWidget(self._concurrency_hint)
+        row_main.addStretch()
+        qal.addLayout(row_main)
+
+        # 单项任务：均按多线程并发处理
         btn_row1 = QHBoxLayout()
         for label, tip, slot in [
-            ("视频", "仅处理视频/音频任务", self._on_action_video),
-            ("测验", "仅作答章节测验", self._on_action_quiz),
-            ("作业", "仅提交课后作业", self._on_action_work),
+            ("视频", "仅处理视频/音频任务（并发）", self._on_action_video),
+            ("测验", "仅作答章节测验（并发）", self._on_action_quiz),
+            ("作业", "仅提交课后作业（并发）", self._on_action_work),
+            ("阅读", "仅处理阅读任务（并发）", self._on_action_read),
+            ("文档", "仅浏览文档/PPT（并发）", self._on_action_doc),
         ]:
             b = QPushButton(label)
             b.setToolTip(tip)
@@ -858,11 +971,10 @@ class CourseWorkshop(QDialog):
 
         btn_row2 = QHBoxLayout()
         for label, tip, slot in [
-            ("阅读", "仅处理阅读任务", self._on_action_read),
-            ("文档", "仅浏览文档/PPT", self._on_action_doc),
-            ("电子书", "仅处理电子书任务", self._on_action_book),
-            ("讨论", "仅处理课程讨论/话题", self._on_action_bbs),
-            ("直播", "仅处理直播回放任务", self._on_action_live),
+            ("电子书", "仅处理电子书任务（并发）", self._on_action_book),
+            ("讨论", "仅处理课程讨论/话题（并发）", self._on_action_bbs),
+            ("直播", "仅处理直播回放任务（并发）", self._on_action_live),
+            ("超链接", "仅完成超链接任务点（并发）", self._on_action_hyperlink),
         ]:
             b = QPushButton(label)
             b.setToolTip(tip)
@@ -870,6 +982,7 @@ class CourseWorkshop(QDialog):
             b.setMinimumHeight(28)
             b.clicked.connect(slot)
             btn_row2.addWidget(b)
+        btn_row2.addStretch()
 
         btn_row3 = QHBoxLayout()
         btn_row3.addWidget(QLabel("签到:"))
@@ -892,6 +1005,7 @@ class CourseWorkshop(QDialog):
         qal.addLayout(btn_row2)
         qal.addLayout(btn_row3)
         v.addWidget(qa)
+        self._refresh_concurrency_hint()
 
         return w
 
@@ -1291,6 +1405,8 @@ class CourseWorkshop(QDialog):
             return
         self._current_course = c
         self._add_queue_btn.setEnabled(True)
+        self._concurrent_btn.setEnabled(True)
+        self._refresh_summary()
         self._append_log(f"已选择: {c.name}")
         self._append_log("正在获取章节列表...")
         self._chapter_worker = _ChapterWorker(self._client, c.course_id, c.class_id, c.cpi)
@@ -1643,6 +1759,7 @@ class CourseWorkshop(QDialog):
 
     def _reset_controls(self):
         self._start_btn.setEnabled(bool(self._queue))
+        self._concurrent_btn.setEnabled(bool(self._current_course))
         self._pause_btn.setText("暂停")
         try:
             self._pause_btn.clicked.disconnect()
@@ -1673,98 +1790,50 @@ class CourseWorkshop(QDialog):
             return None
         return c
 
+    def _max_workers(self) -> int:
+        """快捷操作并发数：默认读 config.yml；关闭多线程时降为 1。"""
+        try:
+            settings = read_settings(config_yml_path())
+        except Exception:
+            return 5
+        if not settings.get("enable-multi-thread", True):
+            return 1
+        try:
+            return max(1, int(settings.get("max-concurrent-threads", 5)))
+        except (TypeError, ValueError):
+            return 5
+
     def _run_single_task_worker(self, task_type: str):
-        """快捷操作通用执行器"""
+        """快捷操作通用执行器：并发处理指定类型的任务点。"""
         c = self._get_current_course_info()
         if not c:
             return
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(self, "提示", "已有任务正在执行，请先停止。")
+            return
 
         self._switch_mode("auto")
-        task_names = {"video": "视频", "quiz": "测验", "work": "作业",
-                      "read": "阅读", "document": "文档", "book": "电子书",
-                      "bbs": "讨论", "live": "直播", "hyperlink": "超链接"}
-        cn_name = task_names.get(task_type, task_type)
-        self._append_log(f"[快捷] 开始处理{cn_name}任务: {c.name}")
+        cn_name = TASK_TYPE_LABELS.get(task_type, task_type)
+        workers = self._max_workers()
+        self._append_log(
+            f"[快捷] 开始处理{cn_name}任务: {c.name}（{workers} 线程并发）"
+        )
 
-        class _SingleTaskWorker(QThread):
-            log_signal = pyqtSignal(str)
-            finished = pyqtSignal(bool, str)
-
-            def __init__(self, client, course_id, class_id, cpi, task_type,
-                         strategy="first", use_tiku=False):
-                super().__init__()
-                self._client = client
-                self._cid = course_id
-                self._clid = class_id
-                self._cpi = cpi
-                self._type = task_type
-                self._strategy = strategy
-                self._use_tiku = use_tiku
-                self._running = True
-
-            def stop(self):
-                self._running = False
-
-            def run(self):
-                try:
-                    self.log_signal.emit("正在获取章节列表...")
-                    ok, chapters, msg = self._client.fetch_chapters(self._cid, self._clid, self._cpi)
-                    if not ok:
-                        self.finished.emit(False, msg)
-                        return
-
-                    total = 0
-                    done = 0
-                    for ch in chapters:
-                        kid = ch.get("chapter_id")
-                        if not kid or not self._running:
-                            continue
-                        self.log_signal.emit(f"章节: {ch.get('name', kid)}")
-                        ok2, tasks, _ = self._client.fetch_tasks(self._cid, self._clid, kid, self._cpi)
-                        if not ok2:
-                            continue
-                        for t in tasks:
-                            if not self._running:
-                                break
-                            tt = t.get("task_type", "")
-                            if tt != self._type:
-                                continue
-                            total += 1
-                            handler_map = {
-                                "video":    self._client.run_video_task,
-                                "quiz":     lambda task=t: self._client.run_quiz_task(task, self._cid, self._strategy, use_tiku=self._use_tiku),
-                                "work":     lambda task=t: self._client.run_work_task(task, self._cid, self._strategy, use_tiku=self._use_tiku),
-                                "read":     lambda task=t: self._client.run_read_task(task, self._cid),
-                                "document": lambda task=t: self._client.run_document_task(task, self._cid),
-                                "book":     lambda task=t: self._client.run_book_task(task, self._cid),
-                                "bbs":      lambda task=t: self._client.run_bbs_task(task, self._cid, self._clid, "random"),
-                                "live":     lambda task=t: self._client.run_live_task(task, self._cid),
-                                "hyperlink": lambda task=t: self._client.run_hyperlink_task(task, self._cid),
-                            }
-                            handler = handler_map.get(self._type)
-                            if handler:
-                                props = t.get("attachment", {}).get("property", {})
-                                name = props.get("name", props.get("title", "?"))
-                                ok3 = handler(t)
-                                done += int(ok3)
-                                self.log_signal.emit(f"  {'[完成]' if ok3 else '[失败]'} {name}")
-
-                    self.log_signal.emit(f"处理完毕: 完成 {done}/{total} 个任务")
-                    cn = task_names.get(self._type, self._type)
-                    self.finished.emit(True, f"已处理 {done}/{total} 个{cn}任务")
-                except Exception as exc:
-                    self.finished.emit(False, f"执行出错: {exc}")
-
-        self._worker = _SingleTaskWorker(
+        self._worker = _QuickTaskWorker(
             self._client, c.course_id, c.class_id, c.cpi, task_type,
             strategy=self._current_strategy(), use_tiku=self._use_tiku(),
+            max_workers=workers,
         )
         self._worker.log_signal.connect(self._append_log)
         self._worker.finished.connect(self._on_quick_task_done)
         self._worker.start()
 
+        self._start_btn.setEnabled(False)
+        self._pause_btn.setEnabled(False)
+        self._stop_btn.setEnabled(True)
+        self._concurrent_btn.setEnabled(False)
         self._cur_pbar.setRange(0, 0)
-        self._cur_status_label.setText(f"状态: 处理{cn_name}任务")
+        self._cur_status_label.setText(f"状态: 处理{cn_name}任务（{workers} 线程并发）")
         self._set_status(f"处理{cn_name}任务")
 
     def _on_quick_task_done(self, ok: bool, msg: str):
@@ -1773,6 +1842,61 @@ class CourseWorkshop(QDialog):
         self._cur_status_label.setText("状态: 空闲")
         self._set_status("空闲")
         self._append_log(f"[快捷] {msg}")
+        self._reset_controls()
+
+    def _on_action_concurrent_course(self):
+        """多线程并发刷课：整门课程按并发学习模式执行。"""
+        c = self._get_current_course_info()
+        if not c:
+            return
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(self, "提示", "已有任务正在执行，请先停止。")
+            return
+
+        self._learning_mode_cb.setCurrentText("并发学习")
+        workers = self._max_workers()
+        chapter_ids = self._selected_chapter_ids() or None
+        self._append_log("=" * 40)
+        self._append_log(
+            f"[并发刷课] {c.name}（{workers} 线程"
+            + (f"，{len(chapter_ids)} 章" if chapter_ids else "，全部章节")
+            + "）"
+        )
+        self._worker = _AutomationWorker(
+            self._client, c.course_id, c.class_id,
+            self._current_strategy(), c.cpi, chapter_ids,
+            True, workers, max_retries=2,
+            use_tiku=self._use_tiku(),
+            learning_mode="concurrent",
+            user_id=getattr(self._client, "current_user_id", None) or "",
+        )
+        self._worker.log_signal.connect(self._append_log)
+        self._worker.finished.connect(self._on_concurrent_done)
+        self._worker.start()
+
+        self._start_btn.setEnabled(False)
+        self._pause_btn.setEnabled(False)
+        self._stop_btn.setEnabled(True)
+        self._concurrent_btn.setEnabled(False)
+        self._cur_course_label.setText(f"当前: {c.name}")
+        self._cur_pbar.setRange(0, 0)
+        self._cur_status_label.setText(f"状态: 并发刷课（{workers} 线程）")
+        self._set_status("并发刷课")
+
+    def _on_concurrent_done(self, ok: bool, stats: dict, msg: str):
+        if ok:
+            self._append_log("[完成] 并发刷课执行成功")
+            for key, cn in [("chapters", "章节"), ("videos", "视频"),
+                            ("completed", "已完成"), ("failed", "失败")]:
+                if key in stats:
+                    self._append_log(f"  {cn}: {stats.get(key, 0)}")
+        else:
+            self._append_log(f"[失败] 并发刷课失败: {msg}")
+        self._cur_pbar.setRange(0, 100)
+        self._cur_pbar.setValue(100 if ok else 0)
+        self._cur_status_label.setText("状态: " + ("已完成" if ok else "失败"))
+        self._set_status("空闲")
+        self._reset_controls()
 
     def _on_action_video(self):
         self._run_single_task_worker("video")
@@ -1797,6 +1921,36 @@ class CourseWorkshop(QDialog):
 
     def _on_action_live(self):
         self._run_single_task_worker("live")
+
+    def _on_action_hyperlink(self):
+        self._run_single_task_worker("hyperlink")
+
+    def _refresh_concurrency_hint(self):
+        """在快捷操作区展示当前并发与视频模式。"""
+        try:
+            settings = read_settings(config_yml_path())
+        except Exception:
+            self._concurrency_hint.setText("并发: 配置读取失败")
+            return
+        if not settings.get("enable-multi-thread", True):
+            self._concurrency_hint.setText("并发: 已关闭（串行执行）")
+            self._refresh_summary()
+            return
+        video_mode = "等时长" if settings.get("video-mode") == 1 else "立即完成"
+        self._concurrency_hint.setText(
+            f"并发: {settings.get('max-concurrent-threads', 5)} 线程 · 视频: {video_mode}"
+        )
+        self._refresh_summary()
+
+    def _open_runtime_settings(self):
+        """打开运行参数对话框（写入 engine/config.yml）。"""
+        from gui.runtime_settings_dialog import RuntimeSettingsDialog
+
+        dlg = RuntimeSettingsDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._refresh_concurrency_hint()
+            self._refresh_mode_hint()
+            self._append_log("[设置] 运行参数已更新（engine/config.yml）")
 
     def _on_action_signin_quick(self):
         self._switch_mode("signin")

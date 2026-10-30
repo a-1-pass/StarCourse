@@ -362,6 +362,16 @@ QWidget#info_widget {
     border-bottom: 1px solid #30363d;
     border-radius: 6px;
 }
+QWidget#info_widget QLabel {
+    color: #8b949e;
+    font-size: 12px;
+}
+QLabel#summary_primary,
+QWidget#info_widget QLabel#summary_primary {
+    color: #e6edf3;
+    font-weight: 700;
+    font-size: 13px;
+}
 QLabel#status_label {
     font-size: 13px;
     font-weight: 600;
@@ -564,4 +574,130 @@ QPushButton#quick_btn:hover {
 }
 QPushButton#quick_btn:pressed {
     background: #1158c7;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   以下为补齐的组件样式：此前账号面板等使用的按钮/输入控件
+   没有对应规则，会退回 Qt 默认浅色外观，与深色主题割裂。
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 对话框 / 弹窗 ── */
+QDialog {
+    background: #0d1117;
+}
+QLabel#dialog_title {
+    color: #e6edf3;
+    font-size: 19px;
+    font-weight: 700;
+}
+QLabel#dialog_subtitle {
+    color: #8b949e;
+    font-size: 12px;
+}
+
+/* ── 账号面板操作按钮 ── */
+QPushButton#green_btn {
+    background: #238636;
+    border: 1px solid #2ea043;
+    border-radius: 6px;
+    padding: 7px 16px;
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 12px;
+}
+QPushButton#green_btn:hover { background: #2ea043; border-color: #3fb950; }
+QPushButton#green_btn:pressed { background: #1a6f2c; }
+QPushButton#green_btn:disabled { background: #163020; border-color: #1f5132; color: #6e7681; }
+
+QPushButton#red_btn {
+    background: #b62324;
+    border: 1px solid #da3633;
+    border-radius: 6px;
+    padding: 7px 16px;
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 12px;
+}
+QPushButton#red_btn:hover { background: #da3633; border-color: #f85149; }
+QPushButton#red_btn:pressed { background: #8e1b1c; }
+
+QPushButton#cyan_btn {
+    background: #0c2d48;
+    border: 1px solid #1f6feb;
+    border-radius: 6px;
+    padding: 7px 16px;
+    color: #79c0ff;
+    font-weight: 600;
+    font-size: 12px;
+}
+QPushButton#cyan_btn:hover { background: #13395b; border-color: #58a6ff; color: #cae8ff; }
+
+QPushButton#amber_btn {
+    background: #3a2c08;
+    border: 1px solid #9e6a03;
+    border-radius: 6px;
+    padding: 7px 16px;
+    color: #e3b341;
+    font-weight: 600;
+    font-size: 12px;
+}
+QPushButton#amber_btn:hover { background: #513b07; border-color: #d29922; color: #f2cc60; }
+
+/* ── 数字输入框（此前无样式，会显示为浅色系统控件） ── */
+QSpinBox, QDoubleSpinBox {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 5px 8px;
+    color: #c9d1d9;
+    min-width: 72px;
+    selection-background-color: #1f6feb;
+}
+QSpinBox:hover, QDoubleSpinBox:hover { border-color: #388bfd; }
+QSpinBox:focus, QDoubleSpinBox:focus { border-color: #388bfd; }
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    background: #161b22;
+    border: none;
+    width: 16px;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background: #30363d;
+}
+
+/* ── 复选框勾选态 ── */
+QCheckBox::indicator:checked {
+    background: #1f6feb;
+    border-color: #58a6ff;
+}
+QCheckBox::indicator:hover {
+    border-color: #58a6ff;
+}
+
+/* ── 提示气泡 ── */
+QToolTip {
+    background: #161b22;
+    border: 1px solid #388bfd;
+    border-radius: 4px;
+    padding: 6px 9px;
+    color: #c9d1d9;
+}
+
+/* ── 消息框 ── */
+QMessageBox {
+    background: #0d1117;
+}
+QMessageBox QLabel {
+    color: #c9d1d9;
+    font-size: 13px;
+}
+
+/* ── 表头角落与网格 ── */
+QTableWidget QTableCornerButton::section {
+    background: #161b22;
+    border: none;
+}
+QTableWidget::item:alternate {
+    background: #0b0f14;
 }
