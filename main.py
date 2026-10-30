@@ -12,17 +12,20 @@ from __future__ import annotations
 
 import os
 import sys
+import traceback
 
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QLabel, QMainWindow, QPushButton,
-    QStackedWidget, QStatusBar, QVBoxLayout, QWidget,
+    QStackedWidget, QStatusBar, QVBoxLayout, QWidget, QMessageBox,
 )
 
 from src.ui_layout import fit_size
+from src.log_manager import log
 
 
 class AppMainWindow(QMainWindow):
@@ -38,6 +41,7 @@ class AppMainWindow(QMainWindow):
         self._detail_dialogs: dict[str, object] = {}
         self._build_ui()
         self._load_theme()
+        self._maybe_show_wizard()
 
     def _fit_window(self, width: int, height: int):
         """初始尺寸不超过当前屏幕可用区域（适配小屏与高 DPI 缩放）。"""
@@ -96,7 +100,7 @@ class AppMainWindow(QMainWindow):
             self._stack.addWidget(self._account_panel)
             self._platform_ok = True
         except Exception as exc:
-            print(f"模块加载失败: {exc}")
+            log.error(f"模块加载失败: {exc}")
             self._platform_ok = False
             err = QLabel(f"模块加载失败: {exc}")
             err.setObjectName("error_label")
@@ -123,6 +127,29 @@ class AppMainWindow(QMainWindow):
         if os.path.exists(qss):
             with open(qss, "r", encoding="utf-8") as fh:
                 self.setStyleSheet(fh.read())
+
+    # ---- 首次启动向导 ----
+    def _maybe_show_wizard(self):
+        """若无保存账号，弹出首次启动引导向导。"""
+        try:
+            from src.first_run import should_show_wizard, FirstRunWizard
+            if should_show_wizard():
+                wizard = FirstRunWizard(self)
+                wizard.finished_with_account.connect(self._on_wizard_account_added)
+                wizard.exec()
+        except Exception as exc:
+            log.warning(f"首次启动向导异常: {exc}")
+
+    def _on_wizard_account_added(self, username: str, password: str, nickname: str):
+        """向导中添加了账号后刷新主界面列表。"""
+        if self._account_panel:
+            self._account_panel.refresh()
+            # 自动打开该账号的工作台
+            from src.account_store import AccountStore
+            store = AccountStore()
+            profile = store.get(username)
+            if profile:
+                self._open_detail(profile)
 
     # ---- 账号详情弹窗 ----
     def _open_detail(self, profile):
@@ -157,9 +184,40 @@ class AppMainWindow(QMainWindow):
         event.accept()
 
 
+def _show_fatal_error(exc_type, exc_value, exc_tb):
+    """全局未捕获异常处理：用图形化消息框替代命令行堆栈，降低用户恐慌。"""
+    error_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    log.critical(f"未捕获异常:\n{error_text}")
+
+    # 如果 QApplication 已存在，尝试弹窗；否则只能打印
+    app = QApplication.instance()
+    if app is not None:
+        QMessageBox.critical(
+            None, "StarCourse 运行时错误",
+            f"程序遇到未预期的错误，即将退出。\n\n"
+            f"错误类型: {exc_type.__name__}\n"
+            f"错误信息: {exc_value}\n\n"
+            f"建议操作:\n"
+            f"1. 重启软件再试一次\n"
+            f"2. 删除程序目录下的 profiles.json 后重试\n"
+            f"3. 到 GitHub Issues 反馈此问题（可点击「导出日志」）\n\n"
+            f"详细日志已写入 logs/ 目录。"
+        )
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
 def main():
+    sys.excepthook = _show_fatal_error
+
+    # 高 DPI 适配
+    if hasattr(Qt, "AA_EnableHighDpiScaling"):
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+
     app = QApplication(sys.argv)
     app.setApplicationName("StarCourse")
+    app.setApplicationVersion(AppMainWindow.VERSION)
     window = AppMainWindow()
     window.show()
     sys.exit(app.exec())
