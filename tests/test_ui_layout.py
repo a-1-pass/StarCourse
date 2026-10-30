@@ -9,13 +9,26 @@ def test_keeps_preferred_on_large_screen():
 
 def test_clamps_to_small_screen():
     # 1366x768 + 125% 缩放 -> 约 1093x614 可用逻辑像素
+    # 仅贴边会让窗口几乎铺满屏幕，因此再按屏幕比例留出边距
     wide, high = fit_size(1093, 614, 1250, 780)
-    assert wide == 1061
-    assert high == 582
+    assert wide == int(1093 * 0.85)
+    assert high == int(614 * 0.85)
+
+
+def test_avoids_nearly_fullscreen_window():
+    wide, high = fit_size(1093, 614, 1250, 780)
+    assert wide <= 1093 - 100
+    assert high <= 614 - 80
+
+
+def test_custom_fraction():
+    assert fit_size(1000, 800, 900, 700, max_fraction=0.5) == (500, 400)
 
 
 def test_never_below_usable_minimum():
-    assert fit_size(400, 300, 1250, 780) == (368, 268)
+    wide, high = fit_size(400, 300, 1250, 780)
+    assert wide == 340
+    assert high == 255
 
 
 def test_degenerate_available_area():

@@ -22,6 +22,14 @@ if _ENGINE_DIR not in sys.path:
 log = logging.getLogger("starcourse.adapter")
 
 
+def configure_engine_logging() -> None:
+    """统一引擎侧 loguru 输出：仅保留 INFO 及以上，屏蔽 DEBUG 刷屏。"""
+    from loguru import logger
+
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
+
+
 @dataclass
 class CourseBrief:
     """Lightweight course descriptor returned to the GUI."""
@@ -37,6 +45,7 @@ class EngineAdapter:
     """High-level façade around the engine package."""
 
     def __init__(self):
+        configure_engine_logging()
         self._init_engine_config()
         self._user = None
         self._courses: list[CourseBrief] = []

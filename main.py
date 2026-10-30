@@ -33,7 +33,7 @@ class AppMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("StarCourse — 超星学习通助手")
-        self.setMinimumSize(760, 520)
+        self.setMinimumSize(640, 460)
         self._fit_window(1024, 700)
         self._detail_dialogs: dict[str, object] = {}
         self._build_ui()

@@ -26,6 +26,15 @@ _MAX_AGE_DAYS = 7
 _FMT = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
+# ----- 日志级别策略：文件记录 INFO+，控制台只显示 WARNING+ 以避免刷屏 -----
+_FILE_LEVEL = logging.INFO
+_CONSOLE_LEVEL = logging.WARNING
+
+
+def startup_message(log_path) -> str:
+    """返回单行启动提示（应用名 + 日志文件路径）。"""
+    return f"{_APP_TAG} started | log: {Path(log_path)}"
+
 
 def _detect_os() -> str:
     import platform
@@ -107,7 +116,7 @@ class LogManager:
         self._ready = True
 
         self._py = logging.getLogger(_LOGGER_TAG)
-        self._py.setLevel(logging.DEBUG)
+        self._py.setLevel(_FILE_LEVEL)
         self._py.propagate = False
 
         log_dir = _log_directory()
@@ -118,10 +127,10 @@ class LogManager:
         max_bytes = _MAX_FILE_MB * 1024 * 1024
 
         fh = _RotatingHandler(str(log_path), maxBytes=max_bytes, backupCount=_MAX_BACKUPS, encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
+        fh.setLevel(_FILE_LEVEL)
 
         ch = logging.StreamHandler(sys.stdout)
-        ch.setLevel(logging.INFO)
+        ch.setLevel(_CONSOLE_LEVEL)
 
         fmt = logging.Formatter(_FMT, datefmt=_DATEFMT)
         fh.setFormatter(fmt)
@@ -131,11 +140,7 @@ class LogManager:
             self._py.addHandler(fh)
             self._py.addHandler(ch)
 
-        self._py.info("=" * 50)
-        self._py.info(f"{_APP_TAG} session started")
-        self._py.info(f"Log file: {log_path}")
-        self._py.info(f"Rotation: {_MAX_FILE_MB} MB / {_MAX_BACKUPS} backups / {_MAX_AGE_DAYS}-day retention")
-        self._py.info("=" * 50)
+        self._py.info(startup_message(log_path))
 
     # ---- public convenience proxies ----
     def debug(self, msg: str): self._py.debug(msg)

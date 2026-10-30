@@ -33,16 +33,16 @@ QGroupBox {
     background: #161b22;
     border: 1px solid #30363d;
     border-radius: 6px;
-    margin-top: 14px;
-    padding: 18px 16px 16px 16px;
+    margin-top: 12px;
+    padding: 14px 12px 12px 12px;
     color: #8b949e;
     font-weight: 600;
     font-size: 13px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 20px;
-    padding: 5px 14px;
+    left: 14px;
+    padding: 4px 10px;
     background: #21262d;
     color: #58a6ff;
     font-weight: 600;
@@ -55,7 +55,7 @@ QPushButton {
     background: #21262d;
     border: 1px solid #30363d;
     border-radius: 6px;
-    padding: 9px 20px;
+    padding: 7px 14px;
     color: #c9d1d9;
     font-weight: 600;
     font-size: 13px;
@@ -571,7 +571,7 @@ QPushButton#quick_btn {
     background: #161b22;
     border: 1px solid #30363d;
     border-radius: 4px;
-    padding: 6px 12px;
+    padding: 4px 9px;
     color: #8b949e;
     font-weight: 600;
     font-size: 11px;

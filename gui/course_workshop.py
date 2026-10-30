@@ -647,7 +647,7 @@ class CourseWorkshop(QDialog):
 
         self.setWindowTitle(f"StarCourse — {profile.username}")
         self.setMinimumSize(520, 420)
-        self._fit_window(1250, 780)
+        self._fit_window(1180, 740)
         self.setModal(False)
         self.setWindowFlags(
             self.windowFlags()
@@ -780,7 +780,7 @@ class CourseWorkshop(QDialog):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
-        splitter.setSizes([340, 300, 380])
+        splitter.setSizes([400, 290, 310])
         outer.addWidget(splitter, 1)
 
         self._refresh_summary()
@@ -979,9 +979,9 @@ class CourseWorkshop(QDialog):
 
         self._concurrency_hint = QLabel("")
         self._concurrency_hint.setStyleSheet("color:#8b949e;font-size:11px;")
-        row_main.addWidget(self._concurrency_hint)
         row_main.addStretch()
         qal.addLayout(row_main)
+        qal.addWidget(self._concurrency_hint)
 
         # 单项任务：均按多线程并发处理
         btn_row1 = QHBoxLayout()
@@ -1014,26 +1014,8 @@ class CourseWorkshop(QDialog):
             btn_row2.addWidget(b)
         btn_row2.addStretch()
 
-        btn_row3 = QHBoxLayout()
-        btn_row3.addWidget(QLabel("签到:"))
-        for label, tip, slot in [
-            ("普通", "扫描并执行普通签到", lambda: self._on_signin_by_type(0)),
-            ("手势", "扫描并执行手势签到", lambda: self._on_signin_by_type(3)),
-            ("位置", "扫描并执行位置签到", lambda: self._on_signin_by_type(4)),
-            ("二维码", "扫描并执行二维码签到", lambda: self._on_signin_by_type(1)),
-            ("拍照", "扫描并执行拍照签到", lambda: self._on_signin_by_type(2)),
-        ]:
-            b = QPushButton(label)
-            b.setToolTip(tip)
-            b.setObjectName("quick_btn")
-            b.setMinimumHeight(28)
-            b.clicked.connect(slot)
-            btn_row3.addWidget(b)
-        btn_row3.addStretch()
-
         qal.addLayout(btn_row1)
         qal.addLayout(btn_row2)
-        qal.addLayout(btn_row3)
         v.addWidget(qa)
         self._refresh_concurrency_hint()
 
@@ -1981,10 +1963,6 @@ class CourseWorkshop(QDialog):
             self._refresh_concurrency_hint()
             self._refresh_mode_hint()
             self._append_log("[设置] 运行参数已更新（engine/config.yml）")
-
-    def _on_action_signin_quick(self):
-        self._switch_mode("signin")
-        self._on_signin_scan()
 
     # ═══════════════════════════════════════════════════════════════
     #  签到逻辑

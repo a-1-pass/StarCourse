@@ -9,6 +9,9 @@ from __future__ import annotations
 MIN_WIDTH = 320
 MIN_HEIGHT = 240
 
+#: 初始窗口最多占可用屏幕的比例，避免在小屏上铺满整个屏幕
+MAX_SCREEN_FRACTION = 0.85
+
 
 def fit_size(
     available_width: int,
@@ -16,8 +19,16 @@ def fit_size(
     preferred_width: int,
     preferred_height: int,
     margin: int = 32,
+    max_fraction: float = MAX_SCREEN_FRACTION,
 ) -> tuple[int, int]:
-    """返回不超过 ``available - margin`` 的窗口尺寸（含安全下限）。"""
-    width = max(MIN_WIDTH, min(preferred_width, available_width - margin))
-    height = max(MIN_HEIGHT, min(preferred_height, available_height - margin))
+    """返回同时满足以下约束的窗口尺寸（含安全下限）：
+
+    - 不超过 ``available - margin``（不贴边）；
+    - 不超过可用屏幕的 ``max_fraction``（小屏上不铺满屏幕）；
+    - 不超出期望尺寸。
+    """
+    width_cap = min(available_width - margin, int(available_width * max_fraction))
+    height_cap = min(available_height - margin, int(available_height * max_fraction))
+    width = max(MIN_WIDTH, min(preferred_width, width_cap))
+    height = max(MIN_HEIGHT, min(preferred_height, height_cap))
     return width, height
