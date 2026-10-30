@@ -10,7 +10,7 @@ StarCourse — 首次启动引导向导
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFrame,
@@ -25,7 +25,7 @@ from src.runtime_settings import save_settings, read_settings, config_yml_path, 
 class FirstRunWizard(QDialog):
     """首次启动引导向导（3 页）"""
 
-    finished_with_account = Qt.pyqtSignal(str, str, str)  # username, password, nickname
+    finished_with_account = pyqtSignal(str, str, str)  # username, password, nickname
 
     def __init__(self, parent=None):
         super().__init__(parent)
