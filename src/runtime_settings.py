@@ -86,22 +86,165 @@ _KEY_RE = re.compile(
     r"(?P<sep>[ \t]*)(?P<value>[^#\n]*?)(?P<comment>[ \t]*#.*)?$"
 )
 
+#: 当 config.yml 完全缺失时自动落盘的默认配置（保留全部中文注释与默认结构）
+_DEFAULT_CONFIG_YML = """\
+InfoStr:
+  instructions: |-
+    StarCourse — 超星学习通课程自动化工具
+    使用前请确认您使用的是最新版，防止因为超星系统更新导致的功能失效
+    
+    使用须知与功能介绍:
+    1.本项目支持一键完成的任务点不包括考试与测试
+    2.输入密码时会被自动隐藏，防止您的密码被偷窥
+    3.项目不能完全保证不被系统识别异常，请理性使用
+    4.所有功能均采用发送GET/POST请求包完成，效率更高且占用资源低
+  signStr: |-
+    1.使用用户名（手机号）与密码进行登录
+    2.使用Cookie进行登录
+    请选择您的登录方式：
+  errSignMode: 请输入正确的序号，如果您不清楚怎么选，请默认选择1
+
+GloConfig:
+  timeout: 3
+  delay:
+    enable: True
+    time: 0.5
+  headers:
+    User-Agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  debug:
+    enable: True
+    level: 8
+
+LogConfig:
+  max_log_size_mb: 10
+  max_backup_count: 5
+  max_log_age_days: 7
+  enable_auto_cleanup: True
+
+CacheConfig:
+  max_cache_size_mb: 50
+  max_cache_age_days: 14
+  max_cache_items: 10000
+  enable_auto_cleanup: True
+  ai_cache_ttl_days: 30
+  tiku_cache_ttl_days: 7
+  cookie_cache_ttl_days: 7
+
+FunConfig:
+  deal-mission:
+    video-mode: 1 # 0为立即完成,1为等时长刷取
+    single-thread: false
+    enable-multi-thread: true
+    max-concurrent-threads: 5
+    cover-rate: 0.6
+    submit-mode: auto
+    notopen-action: retry
+    speed: 1.0
+    learning-mode: stage
+    progress-persistence: true
+    video-retry-rounds: 5
+    exhaustive:
+      enable: false
+      interval: 3.0
+      per-question-max-tries: 5
+      max-submissions: 30
+      backoff-on-fail: 5.0
+      max-vars: 8
+      max-combos: 200
+    font-decode:
+      enable: false
+      map-table: 'data/font_map_table.json'
+    vision-ocr:
+      enable: false
+      model: ''
+      max-image-mb: 5
+  set-log:
+    delay: 30
+
+TikuConfig:
+  provider: ''
+  token: ''
+  tikuadapter_url: ''
+  api_key: ''
+  base_url: 'https://api.deepseek.com'
+  model: 'deepseek-chat'
+  delay: 0
+  cover_rate: 0.8
+  submit: false
+  check_llm_connection: true
+
+AIConfig:
+  active: deepseek
+  priority:
+    - deepseek
+    - openai
+    - claude
+    - wenxin
+  timeout: 30
+  max_retries: 1
+  providers:
+    deepseek:
+      api_key: ''
+      base_url: 'https://api.deepseek.com'
+      model: 'deepseek-chat'
+      max_tokens: 10
+      max_tokens_content: 512
+      temperature: 0.0
+    openai:
+      api_key: ''
+      base_url: 'https://api.openai.com'
+      model: 'gpt-4o-mini'
+      max_tokens: 10
+      max_tokens_content: 512
+      temperature: 0.0
+    claude:
+      api_key: ''
+      base_url: 'https://api.anthropic.com'
+      model: 'claude-3-5-haiku-20241022'
+      max_tokens: 10
+      max_tokens_content: 512
+      temperature: 0.0
+    wenxin:
+      api_key: ''
+      secret_key: ''
+      base_url: 'https://aip.baidubce.com'
+      model: 'ernie-4.0-turbo-8k'
+      max_tokens: 10
+      max_tokens_content: 512
+      temperature: 0.0
+
+SignConfig:
+  enable: true
+  check_interval: 60
+
+UserData:
+  cookie: ''
+  auto-sign: True
+"""
+
 
 def config_yml_path() -> str:
     """config.yml 路径：开发期为 engine/config.yml，打包后为用户数据目录副本。"""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if not getattr(sys, "frozen", False):
-        return os.path.join(root, "engine", "config.yml")
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    target = os.path.join(base, "StarCourse", "config.yml")
+        target = os.path.join(root, "engine", "config.yml")
+    else:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        target = os.path.join(base, "StarCourse", "config.yml")
+
+    # 文件不存在时自动写入默认配置（真正实现「零配置启动」）
     if not os.path.exists(target):
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        bundled = os.path.join(
-            getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "config.yml")
-        if os.path.exists(bundled):
-            import shutil
-            shutil.copy2(bundled, target)
+        _write_default_config(target)
     return target
+
+
+def _write_default_config(path: str) -> None:
+    """将默认配置原子写入指定路径。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(_DEFAULT_CONFIG_YML)
+    os.replace(tmp, path)
 
 
 def read_settings(path: str) -> dict:
@@ -136,7 +279,12 @@ def apply_settings(text: str, values: dict) -> str:
 
 
 def save_settings(path: str, values: dict) -> None:
-    """读取原文件、定点改值后原子写回（不破坏注释）。"""
+    """读取原文件、定点改值后原子写回（不破坏注释）。
+
+    若文件不存在，先自动写入默认配置再修改，确保「零配置」场景下也能正常保存。
+    """
+    if not os.path.exists(path):
+        _write_default_config(path)
     with open(path, "r", encoding="utf-8") as fh:
         text = fh.read()
     new_text = apply_settings(text, values)
