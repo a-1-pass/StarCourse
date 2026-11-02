@@ -24,12 +24,21 @@ class DealVideo:
         if stop_event is not None:
             video._stop_event = stop_event
 
+        # 等时长刷取必须按正常播放节奏上报（isdrag=0，到达终点才 isdrag=4），
+        # 禁用「瞬间完成」的两连发 isdrag=4，避免被平台判定为拖拽/学时异常。
+        video.instant_finish = False
+        if getattr(video, "speed", 1.0) <= 1.0:
+            from classis.Media.Video import resolve_speed
+            video.speed = resolve_speed()
+
         log.info(f"[{thread_name}] 开始处理视频: {video.name}")
         try:
             return bool(video.study(all_time=all_time, log=log))
         except Exception as e:
             # 线程内未捕获异常会让任务点静默丢失，这里兜底记录并返回失败
-            log.error(f"[{thread_name}] 视频 '{video.name}' 刷取异常: {e}")
+            import traceback
+            log.error(
+                f"[{thread_name}] 视频 '{video.name}' 刷取异常: {e}\n{traceback.format_exc()}")
             return False
 
     @staticmethod
