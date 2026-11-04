@@ -4,7 +4,8 @@
 本模块在原实现基础上补齐：
 1. 每个请求显式携带账号 Cookie，避免共享 requests.Session 的 cookie 竞争导致 403；
 2. 上报请求分级重试（网络/超时/5xx/429/403/400/202 分别处理，指数退避 + 抖动）；
-3. 每次刷取先按参考实现（Samueli924/chaoxing）尝试 isdrag=4 的瞬间完成，失败后按 isdrag=3 正常播放节奏上报；
+3. 按参考实现（yatori-dev/yatori-go-core 的视频循环）用 isdrag=0 正常播放上报，
+   到达终点后每次上报把 playingTime 递增 1，让平台持续产生新增学时；
 4. 进度严格按真实时间 1:1 推进（固定正常倍速），避免倍速导致平台按墙钟核算时丢弃超额学时；
 5. duration/playingTime 统一取整后再参与 enc，避免浮点字符串导致签名不一致；
 6. 失败时输出请求参数、HTTP 状态、平台响应摘要，便于定位。
@@ -36,7 +37,9 @@ SPEED_MAX = 2.0
 SPEED_DEFAULT = 1.0
 
 # 到达目标时长后，平台仍不判定通过时的最大补报次数
-FINISH_MAX_RETRIES = 10
+# 参考实现（yatori-go-core）在终点会每秒 +1 上报直到通过；这里保留上限，
+# 避免单视频永久占用线程（30 次约 2~3 分钟，足够平台补记学时）
+FINISH_MAX_RETRIES = 30
 # 单次进度上报内部的最大尝试次数（网络抖动/5xx/429/403 切换 rt）
 REPORT_MAX_RETRIES = 4
 # 状态接口的最大尝试次数（多域名 + 退避）
@@ -108,23 +111,6 @@ def parse_is_passed(body):
     if isinstance(value, str):
         return value.strip().lower() in ("true", "1", "yes")
     return bool(value)
-
-
-def restart_play_time_if_at_target(play_time, target_duration):
-    """进度已到终点但平台仍未判定通过时，返回 0 表示从头重新上报。
-
-    平台按上报进度累计学时；继续停在已上报过的终点重复上报不会产生新增量，
-    视频会永远判不通过（常见于被打回的任务点）。其他开源实现的做法是
-    「进度已到终点却未通过：从头重报」，否则会一直卡在终点。
-    """
-    try:
-        target = float(target_duration or 0)
-        value = float(play_time or 0)
-    except (TypeError, ValueError):
-        return play_time
-    if target > 0 and value >= target:
-        return 0.0
-    return value
 
 
 def resolve_speed(config_data=None) -> float:
@@ -443,7 +429,7 @@ class Video(Media):
             f"[{clazzId}][{userid}][{jobid}][{objectId}][{playing_ms}][d_yHJ!$pdA~5][{duration_ms}][{clip_time}]"
             .encode()).hexdigest()
 
-    def _build_report_params(self, _dtoken, _duration, _playingTime, _isdrag: int = 3) -> dict:
+    def _build_report_params(self, _dtoken, _duration, _playingTime, _isdrag: int = 0) -> dict:
         duration_seconds = int(round(float(_duration)))
         playing_seconds = int(round(float(_playingTime)))
         other_info = self.attachment.get("otherInfo", "") or self.attachment.get("otherinfo", "")
@@ -480,7 +466,7 @@ class Video(Media):
             f"{self.cpi}/{_dtoken}"
         )
 
-    def _video_progress_log(self, _dtoken, _duration, _playingTime, _isdrag: int = 3, headers=None) -> tuple:
+    def _video_progress_log(self, _dtoken, _duration, _playingTime, _isdrag: int = 0, headers=None) -> tuple:
         """上报一次观看进度，内置分级重试。
 
         返回值保持历史二元组 ``(isPassed, http_status)``：
@@ -636,8 +622,8 @@ class Video(Media):
             getattr(loguru.logger, level if level != "success" else "success", loguru.logger.info)(msg)
 
     def _finish_retry_delay(self, finish_reports: int) -> float:
-        """终点补报的退避：1s 起逐次 +1s，叠加抖动，避免 0.5s 连发被判异常。"""
-        return min(6.0, 1.0 + float(finish_reports)) + random.uniform(0, 1.0)
+        """终点补报的间隔：参考实现每秒一次，这里叠加少量抖动，避免整秒机械连发。"""
+        return 1.0 + random.uniform(0, 0.5)
 
     def study(self, all_time: int = 0, log=None) -> bool:
         if self._stopped():
@@ -676,24 +662,11 @@ class Video(Media):
 
         self._log(log, "info", f"视频 '{self.name}' 总时长: {duration}秒, 需要刷取: {target_duration}秒")
 
-        # ── 瞬间完成（照抄参考实现 Samueli924/chaoxing）──────────
-        # 参考实现每次刷取都会先尝试一次 isdrag=4 直接提交到终点；
-        # 平台若已判定通过会立即返回 isPassed=true，无需按播放节奏等待。
-        for attempt in range(1, 3):
-            if self._stopped():
-                self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
-                return False
-            passed, state = self._video_progress_log(
-                dtoken, target_duration, target_duration, 4, headers=headers
-            )
-            if passed:
-                self._log(log, "success", f"视频 '{self.name}' 瞬间完成！")
-                return True
-            loguru.logger.debug(
-                "瞬间完成未通过(第%d次): jobid=%s, HTTP=%s, detail=%s",
-                attempt, self.jobid, state, self._last_error_detail)
-
-        self._log(log, "info", f"视频 '{self.name}' 需要正常刷取，开始进度上报...")
+        # ── 正常播放上报（照抄 yatori-go-core 的 ExecuteVideoTest）────────
+        # 参考实现不再先发 isdrag=4（瞬间完成）：对未通过的任务点，
+        # 直接提交终点只会把平台记录的播放位置推到结尾而不计入学时，
+        # 之后无论怎么补报都会一直 isPassed=false。
+        self._log(log, "info", f"视频 '{self.name}' 开始模拟播放，按正常 1 倍速上报...")
 
         last_log_time = 0
         last_iter = time.time()
@@ -720,10 +693,11 @@ class Video(Media):
                     return True
                 body = f"；平台响应: {self._last_report_text}" if self._last_report_text else ""
                 detail = f"；最后错误: {self._last_error_detail}" if self._last_error_detail else ""
+                last_playing = self._last_report_params.get("playingTime", int(play_time))
                 self._log(log, "warning",
                           f"视频 '{self.name}' 到达目标时长后仍未判定通过，"
                           f"放弃本轮（已补报 {finish_reports} 次, HTTP {self._last_http_status or state}, "
-                          f"jobid={self.jobid}, playingTime={int(play_time)}/{target_duration}"
+                          f"jobid={self.jobid}, playingTime={last_playing}/{target_duration}"
                           f"{body}{detail}）")
                 return False
             if at_target:
@@ -731,10 +705,14 @@ class Video(Media):
             else:
                 should_report = play_time - last_log_time >= wait_time
             if should_report:
-                # 与历史上可成功的实现保持一致：正常播放与终点补报都用 isdrag=3。
-                # isdrag=4 只在瞬间完成（video-mode=0）时使用，避免被平台按拖拽处理。
+                # 照抄 yatori-go-core：正常播放统一提交 isdrag=0（正常视屏播放提交）。
+                # 到达终点后每次上报把 playingTime 递增 1：平台按“新增学时”记账，
+                # 重复上报同一个终点值不会产生新增量，会永远 isPassed=false。
+                report_time = (
+                    int(target_duration) + finish_reports if at_target else int(play_time)
+                )
                 is_passed, state = self._video_progress_log(
-                    dtoken, target_duration, int(play_time), 3, headers=headers
+                    dtoken, target_duration, report_time, 0, headers=headers
                 )
                 if at_target:
                     finish_reports += 1

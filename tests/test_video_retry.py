@@ -4,7 +4,7 @@
 覆盖：
 - 网络异常 / 超时自动重试；5xx 指数退避重试；429 按 Retry-After 等待
 - 403 切换 rt 重试；400/202 交给上层刷新会话
-- 参考实现：先两次 isdrag=4 瞬间完成，随后正常播放 isdrag=3
+- 参考实现（yatori-go-core）：正常播放统一 isdrag=0，到达终点后 playingTime 逐次 +1
 - 状态接口多域名重试与 Cookie 兜底
 - duration/playingTime 取整后参与 enc，避免签名不一致
 - 等时长刷取固定 1 倍速（忽略配置倍速）
@@ -231,7 +231,7 @@ class TestAntiDetectionParams:
 
 
 class TestStudyIsdrag:
-    def test_instant_four_then_playback_three(self, monkeypatch):
+    def test_playback_uses_isdrag_zero_and_end_time_increments(self, monkeypatch):
         video = _video(duration=5)
         reported = []
 
@@ -244,14 +244,16 @@ class TestStudyIsdrag:
 
         def fake_progress(_dtoken, _duration, playing_time, isdrag=0, headers=None):
             reported.append((playing_time, isdrag))
-            return isdrag == 3 and playing_time >= 5, 200
+            # 前两条终点上报仍是 false，第 3 条（playingTime=7）才判定通过
+            return int(playing_time) >= 7, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 参考实现：先两次 isdrag=4 瞬间完成，随后正常播放全部 isdrag=3
-        assert [d for _p, d in reported[:2]] == [4, 4]
-        assert {d for _p, d in reported[2:]} == {3}
+        # 参考实现：全部用 isdrag=0 正常播放；到终点后 playingTime 每次 +1
+        assert {d for _p, d in reported} == {0}
+        end_reports = [p for p, _d in reported if p >= 5]
+        assert end_reports[:3] == [5, 6, 7]
 
     def test_run_video_forces_one_x_speed(self, monkeypatch):
         video = _video(duration=10)
@@ -307,8 +309,8 @@ class TestStudyPacing:
             lambda *a, **k: (calls.append(a[3] if len(a) > 3 else k.get("isdrag")) or (False, 200)))
 
         assert video.study() is False
-        # 2 次瞬间完成尝试 + 播放位首报 1 次 + 终点补报 FINISH_MAX_RETRIES 次
-        assert len(calls) == 2 + 1 + video_mod.FINISH_MAX_RETRIES
+        # 播放位首报 1 次 + 终点补报 FINISH_MAX_RETRIES 次
+        assert len(calls) == 1 + video_mod.FINISH_MAX_RETRIES
 
 
 class TestThreadLocalSession:

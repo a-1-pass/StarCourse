@@ -24,7 +24,6 @@ from classis.Media.Video import (  # noqa: E402
     FINISH_MAX_RETRIES,
     Video,
     normalize_play_time,
-    restart_play_time_if_at_target,
     should_give_up_finish,
 )
 
@@ -83,8 +82,8 @@ class TestFinishRetryBudget:
         calls = _patch_video_io(monkeypatch, video, [(False, 200)])
 
         assert video.study() is False
-        # 2 次瞬间完成尝试 + 有限次补报
-        assert len(calls) <= 2 + FINISH_MAX_RETRIES
+        # 播放位首报 + 有限次终点补报
+        assert len(calls) <= 1 + FINISH_MAX_RETRIES
 
     def test_study_succeeds_when_later_finish_report_passes(self, monkeypatch):
         """补报过程中平台判定通过 → 正常返回 True。"""
@@ -95,29 +94,19 @@ class TestFinishRetryBudget:
 
 
 # ════════════════════════════════════════════════════════════
-# 进度已到终点但未通过：从头重新上报
+# 进度已到终点但未通过：终点上报递增 playingTime
 # ════════════════════════════════════════════════════════════
 
-class TestRestartAtTarget:
-    """附件里的 playTime 已到终点但 isPassed=false 时，不能继续停在终点。
+class TestFinishReporting:
+    """附件里的 playTime 已到终点但 isPassed=false 时，不能重复上报同一个值。
 
     平台按上报进度累计学时，停在已上报过的终点重复上报不会产生新增量，
-    会永远判不通过。其他开源实现（如 ZHE-you/Chaoxingxuexitong-ayto）的做法是
-    「进度已到终点却未通过（常见于被打回）：从头重报」。
+    会永远判不通过。参考实现（yatori-go-core）的做法是终点每次 +1 上报。
     """
 
-    def test_helper_resets_at_target(self):
-        assert restart_play_time_if_at_target(10, 10) == 0
-        assert restart_play_time_if_at_target(700, 600) == 0
-        assert restart_play_time_if_at_target(5, 10) == 5
-        assert restart_play_time_if_at_target(0, 10) == 0
-
-    def test_helper_keeps_value_without_target(self):
-        assert restart_play_time_if_at_target(5, 0) == 5
-        assert restart_play_time_if_at_target(5, None) == 5
-
-    def test_study_keeps_reporting_at_target_without_restart(self, monkeypatch):
-        """照抄参考实现：进度已在终点时直接停在终点持续上报，不再从头重报。"""
+    def test_study_increments_playing_time_at_target(self, monkeypatch):
+        """照抄 yatori-go-core：到达终点后每次上报 playingTime +1，
+        平台按新增学时记账，重复同一个终点值不会被补记。"""
         video = _video(play_time_ms=10 * 1000, duration=10)
         reported = []
 
@@ -132,15 +121,13 @@ class TestRestartAtTarget:
 
         def fake_progress(_dtoken, _duration, playing_time, *_a, **_k):
             reported.append(playing_time)
-            # 前两次是瞬间完成尝试；随后在终点持续上报，第 11 次判定通过
             return len(reported) >= 11, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 前两次是 isdrag=4 的瞬间完成尝试；后续始终停在终点，不回到 0
-        assert reported[:2] == [10, 10]
-        assert all(p == 10 for p in reported[2:])
+        # 已在终点：10, 11, 12 ... 逐次 +1，不再重复同一个值
+        assert reported == list(range(10, 21))
 
 
 # ════════════════════════════════════════════════════════════
