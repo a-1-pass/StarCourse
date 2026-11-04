@@ -4,7 +4,7 @@
 本模块在原实现基础上补齐：
 1. 每个请求显式携带账号 Cookie，避免共享 requests.Session 的 cookie 竞争导致 403；
 2. 上报请求分级重试（网络/超时/5xx/429/403/400/202 分别处理，指数退避 + 抖动）；
-3. 播放心跳与终点补报统一使用 isdrag=3（与历史上可成功的实现一致）；仅 video-mode=0 的「瞬间完成」使用 isdrag=4；
+3. 每次刷取先按参考实现（Samueli924/chaoxing）尝试 isdrag=4 的瞬间完成，失败后按 isdrag=3 正常播放节奏上报；
 4. 进度严格按真实时间 1:1 推进（固定正常倍速），避免倍速导致平台按墙钟核算时丢弃超额学时；
 5. duration/playingTime 统一取整后再参与 enc，避免浮点字符串导致签名不一致；
 6. 失败时输出请求参数、HTTP 状态、平台响应摘要，便于定位。
@@ -225,12 +225,8 @@ class Video(Media):
         self._last_http_status = 0
         # 可选停止事件（由刷课引擎注入；None 时行为与历史完全一致）
         self._stop_event = None
-        # 倍速（由刷课引擎按 config.yml 的 speed 注入，仅 video-mode 1 等时长刷取生效；
-        # 默认 1.0 时进度推进与历史行为完全一致）
+        # 倍速（固定 1.0：进度推进必须与真实时间 1:1，倍速上报会被平台按墙钟核算丢弃）
         self.speed = SPEED_DEFAULT
-        # 是否允许「瞬间完成」（video-mode 0 专用）。等时长刷取由 run_video 置 False，
-        # 避免未播放就拖到终点的 isdrag=4 请求被平台判定为异常。
-        self.instant_finish = True
 
     def _stopped(self) -> bool:
         return self._stop_event is not None and self._stop_event.is_set()
@@ -675,34 +671,27 @@ class Video(Media):
             return False
 
         play_time = self._resume_play_time(target_duration)
-        if play_time >= target_duration:
-            # 附件记录的位置已在终点但任务点仍未通过（被打回），
-            # 继续从终点上报不会产生新的学时增量，必须从头重新上报
-            self._log(log, "warning",
-                      f"视频 '{self.name}' 进度已在终点({int(play_time)}秒)但平台未判定通过，从头重新上报")
-            play_time = restart_play_time_if_at_target(play_time, target_duration)
-        elif play_time > 0:
+        if play_time > 0:
             self._log(log, "info", f"视频 '{self.name}' 从 {int(play_time)} 秒处继续刷取")
 
         self._log(log, "info", f"视频 '{self.name}' 总时长: {duration}秒, 需要刷取: {target_duration}秒")
 
-        # ── 瞬间完成（仅 video-mode 0）────────────────────────
-        # 参考实现中正常播放不会一上来就 isdrag=4 拖到终点；等时长模式由
-        # DealVideo.run_video 置 instant_finish=False，避免被风控判定为拖拽。
-        if getattr(self, "instant_finish", True):
-            for attempt in range(1, 3):
-                if self._stopped():
-                    self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
-                    return False
-                passed, state = self._video_progress_log(
-                    dtoken, target_duration, target_duration, _isdrag=4, headers=headers
-                )
-                if passed:
-                    self._log(log, "success", f"视频 '{self.name}' 瞬间完成！")
-                    return True
-                loguru.logger.debug(
-                    "瞬间完成未通过(第%d次): jobid=%s, HTTP=%s, detail=%s",
-                    attempt, self.jobid, state, self._last_error_detail)
+        # ── 瞬间完成（照抄参考实现 Samueli924/chaoxing）──────────
+        # 参考实现每次刷取都会先尝试一次 isdrag=4 直接提交到终点；
+        # 平台若已判定通过会立即返回 isPassed=true，无需按播放节奏等待。
+        for attempt in range(1, 3):
+            if self._stopped():
+                self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
+                return False
+            passed, state = self._video_progress_log(
+                dtoken, target_duration, target_duration, 4, headers=headers
+            )
+            if passed:
+                self._log(log, "success", f"视频 '{self.name}' 瞬间完成！")
+                return True
+            loguru.logger.debug(
+                "瞬间完成未通过(第%d次): jobid=%s, HTTP=%s, detail=%s",
+                attempt, self.jobid, state, self._last_error_detail)
 
         self._log(log, "info", f"视频 '{self.name}' 需要正常刷取，开始进度上报...")
 
@@ -771,7 +760,7 @@ class Video(Media):
                         normalized_play_time = normalize_play_time(
                             refreshed_meta.get("playTime"), target_duration)
                         if normalized_play_time is not None:
-                            play_time = restart_play_time_if_at_target(normalized_play_time, target_duration)
+                            play_time = normalized_play_time
                         loguru.logger.debug(f"刷新后 dtoken={dtoken}, duration={duration}, play_time={play_time}")
                         continue
                     self._log(log, "error",
@@ -798,7 +787,7 @@ class Video(Media):
                         normalized_play_time = normalize_play_time(
                             refreshed_meta.get("playTime"), target_duration)
                         if normalized_play_time is not None:
-                            play_time = restart_play_time_if_at_target(normalized_play_time, target_duration)
+                            play_time = normalized_play_time
                         continue
                     self._log(log, "error",
                               f"视频 '{self.name}' 会话失效后刷新状态失败: {self._last_error_detail}")

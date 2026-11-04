@@ -4,10 +4,10 @@
 覆盖：
 - 网络异常 / 超时自动重试；5xx 指数退避重试；429 按 Retry-After 等待
 - 403 切换 rt 重试；400/202 交给上层刷新会话
-- 正常播放 isdrag=3，到达终点 isdrag=4
+- 参考实现：先两次 isdrag=4 瞬间完成，随后正常播放 isdrag=3
 - 状态接口多域名重试与 Cookie 兜底
 - duration/playingTime 取整后参与 enc，避免签名不一致
-- 等时长刷取禁用瞬间完成并注入倍速
+- 等时长刷取固定 1 倍速（忽略配置倍速）
 """
 from __future__ import annotations
 
@@ -231,9 +231,8 @@ class TestAntiDetectionParams:
 
 
 class TestStudyIsdrag:
-    def test_playback_and_finish_both_use_three(self, monkeypatch):
+    def test_instant_four_then_playback_three(self, monkeypatch):
         video = _video(duration=5)
-        video.instant_finish = False
         reported = []
 
         monkeypatch.setattr(
@@ -245,21 +244,21 @@ class TestStudyIsdrag:
 
         def fake_progress(_dtoken, _duration, playing_time, isdrag=0, headers=None):
             reported.append((playing_time, isdrag))
-            return playing_time >= 5, 200
+            return isdrag == 3 and playing_time >= 5, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 正常播放（含终点补报）统一使用 isdrag=3；isdrag=4 仅用于瞬间完成
-        assert {d for _p, d in reported} == {3}
+        # 参考实现：先两次 isdrag=4 瞬间完成，随后正常播放全部 isdrag=3
+        assert [d for _p, d in reported[:2]] == [4, 4]
+        assert {d for _p, d in reported[2:]} == {3}
 
-    def test_instant_finish_disabled_by_run_video(self, monkeypatch):
+    def test_run_video_forces_one_x_speed(self, monkeypatch):
         video = _video(duration=10)
         monkeypatch.setattr(video_mod, "resolve_speed", lambda *_a, **_k: 1.5)
         monkeypatch.setattr(video, "study", lambda **_k: True)
 
         assert DealVideo.run_video(video, MagicMock(), MagicMock()) is True
-        assert video.instant_finish is False
         # 正常刷取固定 1 倍速，忽略配置里的倍速
         assert video.speed == 1.0
 
@@ -270,7 +269,6 @@ class TestStudyPacing:
 
     def test_progress_advances_at_real_time_even_if_speed_gt_1(self, monkeypatch):
         video = _video(duration=30)
-        video.instant_finish = False
         video.speed = 2.0
         speeds = []
 
@@ -286,7 +284,7 @@ class TestStudyPacing:
         monkeypatch.setattr(video_mod, "advance_play_time", fake_advance)
         monkeypatch.setattr(
             video, "_video_progress_log",
-            lambda *a, **k: (int(a[2]) >= 30, 200))
+            lambda *a, **k: (a[3] != 4 and int(a[2]) >= 30, 200))
 
         assert video.study() is True
         assert speeds and set(speeds) == {1.0}
@@ -294,7 +292,6 @@ class TestStudyPacing:
     def test_gives_up_after_bounded_finish_retries(self, monkeypatch):
         """平台始终不判通过时，补满 FINISH_MAX_RETRIES 次即复核放弃，避免永久占用线程。"""
         video = _video(duration=10)
-        video.instant_finish = False
 
         monkeypatch.setattr(
             video, "get_status",
@@ -310,8 +307,8 @@ class TestStudyPacing:
             lambda *a, **k: (calls.append(a[3] if len(a) > 3 else k.get("isdrag")) or (False, 200)))
 
         assert video.study() is False
-        # 播放位首报 1 次 + 终点补报 FINISH_MAX_RETRIES 次
-        assert len(calls) == 1 + video_mod.FINISH_MAX_RETRIES
+        # 2 次瞬间完成尝试 + 播放位首报 1 次 + 终点补报 FINISH_MAX_RETRIES 次
+        assert len(calls) == 2 + 1 + video_mod.FINISH_MAX_RETRIES
 
 
 class TestThreadLocalSession:

@@ -116,8 +116,8 @@ class TestRestartAtTarget:
         assert restart_play_time_if_at_target(5, 0) == 5
         assert restart_play_time_if_at_target(5, None) == 5
 
-    def test_study_restarts_from_zero_when_resume_position_is_at_target(self, monkeypatch):
-        """被打回的视频首次正常上报必须从小进度开始，而不是继续报终点。"""
+    def test_study_keeps_reporting_at_target_without_restart(self, monkeypatch):
+        """照抄参考实现：进度已在终点时直接停在终点持续上报，不再从头重报。"""
         video = _video(play_time_ms=10 * 1000, duration=10)
         reported = []
 
@@ -125,7 +125,6 @@ class TestRestartAtTarget:
             video, "get_status",
             lambda *a, **k: {"status": "success", "duration": 10, "dtoken": "dt"})
         monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
-        # 每轮只推进 1 秒，确保能观察到从小到大的上报序列
         monkeypatch.setattr(video_mod, "advance_play_time",
                             lambda p, _dt, _s, target: min(float(target), p + 1))
         monkeypatch.setattr(video_mod, "random", SimpleNamespace(uniform=lambda a, b: 0))
@@ -133,14 +132,15 @@ class TestRestartAtTarget:
 
         def fake_progress(_dtoken, _duration, playing_time, *_a, **_k):
             reported.append(playing_time)
-            return (playing_time < 10), 200
+            # 前两次是瞬间完成尝试；随后在终点持续上报，第 11 次判定通过
+            return len(reported) >= 11, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 前两次是 isdrag=4 的瞬间完成尝试（终点），之后必须从头开始
+        # 前两次是 isdrag=4 的瞬间完成尝试；后续始终停在终点，不回到 0
         assert reported[:2] == [10, 10]
-        assert reported[2] < 10
+        assert all(p == 10 for p in reported[2:])
 
 
 # ════════════════════════════════════════════════════════════

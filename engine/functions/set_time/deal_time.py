@@ -24,9 +24,7 @@ class DealVideo:
         if stop_event is not None:
             video._stop_event = stop_event
 
-        # 等时长刷取按正常 1 倍速播放节奏上报（isdrag=3），
-        # 禁用「瞬间完成」的 isdrag=4，避免被平台判定为拖拽/学时异常。
-        video.instant_finish = False
+        # 按正常 1 倍速播放节奏上报（isdrag=3），进度与真实时间 1:1。
         video.speed = 1.0
 
         log.info(f"[{thread_name}] 开始处理视频: {video.name}")
