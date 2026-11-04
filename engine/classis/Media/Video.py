@@ -186,6 +186,44 @@ def get_timestamp():
     return str(int(time.time() * 1000))
 
 
+# ── 学习通 App 设备指纹（照抄 yatori-go-core 的 XueXiTongLoginApi.GetUA）────
+_APP_VERSION = "6.7.5"
+_APP_BUILD = "10941_314"  # 对应 6.7.5 版本
+_DEVICE_VENDOR = "MI10"
+_ANDROID_VERSION = "Android 11"
+
+
+def _app_imei(userid: str) -> str:
+    """按账号派生稳定的 32 位设备指纹。
+
+    yatori 首次运行随机生成后持久化；这里用 userid 派生，保证同一账号
+    多会话/多进程设备指纹一致，避免被风控判定为设备漂移。
+    """
+    return hashlib.md5(f"starcourse-xxt-{userid}".encode()).hexdigest()
+
+
+def _mobile_user_agent(userid: str) -> str:
+    """学习通 App 的 WebView UA（schild 为固定格式负载的 MD5）。"""
+    imei = _app_imei(userid)
+    sign_payload = " ".join([
+        "(schild:ipL$TkeiEmfy1gTXb2XHrdLN0a@7c^vu)",
+        f"(device:{_DEVICE_VENDOR})",
+        "Language/zh_CN",
+        f"com.chaoxing.mobile/ChaoXingStudy_3_{_APP_VERSION}_android_phone_{_APP_BUILD}",
+        f"(@Kalimdor)_{imei}",
+    ])
+    schild = hashlib.md5(sign_payload.encode()).hexdigest()
+    return " ".join([
+        f"Mozilla/5.0 (Linux; {_ANDROID_VERSION}; {_DEVICE_VENDOR} Build/QKQ1.190929.002; wv)",
+        "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/79.0.3945.116 Mobile Safari/537.36",
+        f"(schild:{schild})",
+        f"(device:{_DEVICE_VENDOR})",
+        "Language/zh_CN",
+        f"com.chaoxing.mobile/ChaoXingStudy_3_{_APP_VERSION}_android_phone_{_APP_BUILD}",
+        f"(@Kalimdor)_{imei}",
+    ])
+
+
 class Video(Media):
     def __init__(self, attachment: dict, headers, defaults: dict, dtype: str = "Video", name: str = "", course_id: str = "", class_id: str = "", userid: str = ""):
         super().__init__(attachment, headers)
@@ -394,6 +432,8 @@ class Video(Media):
     # ── 进度上报 ─────────────────────────────────────────────
 
     def _get_report_headers(self) -> dict:
+        if self.dtype == "Video":
+            return self._get_mobile_report_headers()
         referer = (
             "https://mooc1.chaoxing.com/ananas/modules/audio/index_new.html?v=2025-0725-1842"
             if self.dtype == "Audio"
@@ -415,6 +455,27 @@ class Video(Media):
             'Cookie': self.headers.get("Cookie", ""),
         }
         return headers
+
+    def _get_mobile_report_headers(self) -> dict:
+        """手机端上报请求头（照抄 yatori-go-core VideoSubmitStudyTimePEApi）。
+
+        视频学时提交走 App 通道：移动端 UA（含设备指纹）+ 播放器环境 Cookie。
+        """
+        cookie = (self.headers or {}).get("Cookie", "") or ""
+        # 官方播放器固定写入的环境 Cookie，缺失时上报可能不被计入
+        for item in ("fanyamoocs=11401F839C536D9E", "thirdRegist=0", "videojs_id=1778753"):
+            if item.split("=", 1)[0] not in cookie:
+                cookie = f"{cookie}; {item}" if cookie else item
+        return {
+            'Accept': '*/*',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Content-Type': 'application/json',
+            'Host': 'mooc1.chaoxing.com',
+            'User-Agent': _mobile_user_agent(self.userid),
+            # 显式携带账号 Cookie：共享 Session 被其他线程清空/重建时不会丢鉴权
+            'Cookie': cookie,
+        }
 
     def _get_enc(self, clazzId, jobid, objectId, playingTime, duration, userid):
         """MD5 签名：[clazzId][userid][jobid][objectId][playingMs][magic][durationMs][clipTime]。
@@ -444,20 +505,29 @@ class Video(Media):
             "jobid": self.jobid,
             "userid": self.userid,
             "isdrag": int(_isdrag),
-            "view": "pc",
+            # 视频走手机端通道（view=json），音频维持 PC 通道
+            "view": "json" if self.dtype == "Video" else "pc",
             "enc": self._get_enc(
                 self.class_id, self.jobid, self.objectId, playing_seconds, duration_seconds, self.userid),
             "dtype": self.dtype,
         }
 
-        if self.videoFaceCaptureEnc:
-            params["videoFaceCaptureEnc"] = self.videoFaceCaptureEnc
-        # attDuration 是平台校验时长一致性的字段；仅当附件/状态提供时才上报，
-        # 缺失时不要伪造，避免与平台记录不一致导致上报被拒（与参考实现一致）
-        if self.attDuration:
-            params["attDuration"] = self.attDuration
-        if self.attDurationEnc:
-            params["attDurationEnc"] = self.attDurationEnc
+        if self.dtype == "Video":
+            # 照抄 yatori 手机端：attDuration 恒为视频时长；
+            # attDurationEnc / videoFaceCaptureEnc 无论是否为空都强制携带，
+            # 字段缺失会导致平台不把上报计入学时
+            params["attDuration"] = duration_seconds
+            params["attDurationEnc"] = self.attDurationEnc or ""
+            params["videoFaceCaptureEnc"] = self.videoFaceCaptureEnc or ""
+        else:
+            if self.videoFaceCaptureEnc:
+                params["videoFaceCaptureEnc"] = self.videoFaceCaptureEnc
+            # attDuration 是平台校验时长一致性的字段；仅当附件/状态提供时才上报，
+            # 缺失时不要伪造，避免与平台记录不一致导致上报被拒
+            if self.attDuration:
+                params["attDuration"] = self.attDuration
+            if self.attDurationEnc:
+                params["attDurationEnc"] = self.attDurationEnc
         return params
 
     def _report_url(self, _dtoken: str) -> str:
@@ -481,7 +551,12 @@ class Video(Media):
         url = self._report_url(_dtoken)
         params = self._build_report_params(_dtoken, _duration, _playingTime, _isdrag)
         rt_primary = self._resolve_rt() or "0.9"
-        rt_candidates = [rt_primary, "1" if rt_primary != "1" else "0.9"]
+        if self.dtype == "Video":
+            # 手机端 rt 两位小数（照抄 yatori：rt=%.2f）
+            rt_primary = f"{float(rt_primary):.2f}"
+            rt_candidates = [rt_primary, "1.00" if rt_primary != "1.00" else "0.90"]
+        else:
+            rt_candidates = [rt_primary, "1" if rt_primary != "1" else "0.9"]
         rt_index = 0
         last_state = 0
 

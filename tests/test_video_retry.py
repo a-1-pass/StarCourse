@@ -190,8 +190,22 @@ class TestStatusRetry:
 class TestAntiDetectionParams:
     def test_cookie_passed_explicitly(self):
         video = _video()
-        assert video._get_report_headers()["Cookie"] == "fid=9790; _uid=123; cpi=CPI"
+        cookie = video._get_report_headers()["Cookie"]
+        # 视频走手机端通道：账号 Cookie 之外还要带播放器环境 Cookie
+        assert "fid=9790; _uid=123; cpi=CPI" in cookie
+        assert "fanyamoocs=11401F839C536D9E" in cookie
+        assert "videojs_id=1778753" in cookie
         assert video._build_status_headers()["Cookie"] == "fid=9790; _uid=123; cpi=CPI"
+
+    def test_video_mobile_ua_matches_yatori(self):
+        video = _video()
+        ua = video._get_report_headers()["User-Agent"]
+        # 照抄 yatori 手机端 UA：含设备指纹 schild 与 (@Kalimdor)_imei
+        assert "com.chaoxing.mobile/ChaoXingStudy_3_6.7.5_android_phone_10941_314" in ua
+        assert "(schild:" in ua
+        assert "(@Kalimdor)_" in ua
+        # 同一账号设备指纹必须稳定，避免风控判定设备漂移
+        assert ua == _video()._get_report_headers()["User-Agent"]
 
     def test_report_params_are_integers_and_enc_consistent(self, monkeypatch):
         video = _video()
@@ -199,7 +213,11 @@ class TestAntiDetectionParams:
         assert params["duration"] == 600
         assert params["playingTime"] == 300
         assert params["clipTime"] == "0_600"
-        assert "attDuration" not in params  # 附件缺失时不伪造 attDuration
+        # 照抄 yatori 手机端：attDuration 恒为时长，attDurationEnc/videoFaceCaptureEnc 强制携带
+        assert params["attDuration"] == 600
+        assert params["attDurationEnc"] == ""
+        assert params["videoFaceCaptureEnc"] == ""
+        assert params["view"] == "json"
         assert params["enc"] == video._get_enc("CL", "job", "OID", 300, 600, "123")
 
     def test_enc_float_equals_integer(self):
