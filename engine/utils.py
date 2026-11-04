@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """HTTP helpers and configuration loader for the StarCourse engine."""
+import threading
+
 import requests
 from loguru import logger
 from requests import post, get
@@ -88,6 +90,20 @@ BASE_RETRY_DELAY = 2.0
 
 ses = requests.session()
 
+# doGet/doPost 每次都会清空并重建 Session 的 headers/cookies；
+# 多线程并发刷课时共享 ses 会被其他线程清空，导致请求丢 Cookie 返回 403。
+# 因此 doGet/doPost 使用线程本地 Session，全局 ses 仅保留给显式传 Cookie 的调用方。
+_req_local = threading.local()
+
+
+def _thread_session() -> requests.Session:
+    """返回当前线程专属的 Session（免锁、可复用连接）。"""
+    local_ses = getattr(_req_local, "ses", None)
+    if local_ses is None:
+        local_ses = requests.session()
+        _req_local.ses = local_ses
+    return local_ses
+
 
 # 指纹类请求头由 RUNTIME_HEADERS 统一保证，调用方传入的同类头一律忽略，避免冲突
 _FINGERPRINT_KEYS = {
@@ -132,20 +148,21 @@ def doGet(url: str, headers: 'dict|str' = glo_headers, ifFullBack: bool = False)
             eff_headers = _build_effective_headers(headers)
             cookie_str = eff_headers.pop("Cookie", None)
 
-            ses.headers.clear()
-            ses.headers.update(eff_headers)
+            http = _thread_session()
+            http.headers.clear()
+            http.headers.update(eff_headers)
             # 重建 cookie 池，避免历史 cookie 累积导致内存膨胀或跨账号串号
-            ses.cookies.clear()
+            http.cookies.clear()
             if cookie_str:
                 for item in cookie_str.split(";"):
                     item = item.strip()
                     if "=" in item:
                         k, v = item.split("=", 1)
-                        ses.cookies.set(k.strip(), v.strip())
+                        http.cookies.set(k.strip(), v.strip())
 
             # 固定延迟叠加随机抖动，模拟人工操作节奏
             jitter_sleep(time_delay if if_delay else 0.2, 0.3)
-            resp = ses.get(url=url, timeout=glo_timeout)
+            resp = http.get(url=url, timeout=glo_timeout)
             if ifFullBack:
                 return resp
             if resp.status_code == 200:
@@ -184,19 +201,20 @@ def doPost(url: str, headers: 'dict|str' = glo_headers, data: 'dict|str' = "", i
             eff_headers = _build_effective_headers(headers)
             cookie_str = eff_headers.pop("Cookie", None)
 
-            ses.headers.clear()
-            ses.headers.update(eff_headers)
+            http = _thread_session()
+            http.headers.clear()
+            http.headers.update(eff_headers)
             # 重建 cookie 池，避免历史 cookie 累积导致内存膨胀或跨账号串号
-            ses.cookies.clear()
+            http.cookies.clear()
             if cookie_str:
                 for item in cookie_str.split(";"):
                     item = item.strip()
                     if "=" in item:
                         k, v = item.split("=", 1)
-                        ses.cookies.set(k.strip(), v.strip())
+                        http.cookies.set(k.strip(), v.strip())
 
             jitter_sleep(time_delay if if_delay else 0.2, 0.3)
-            resp = ses.post(url=url, data=data, timeout=glo_timeout)
+            resp = http.post(url=url, data=data, timeout=glo_timeout)
             if ifFullBack:
                 return resp
             if resp.status_code == 200:

@@ -47,6 +47,32 @@ def patch_submit(monkeypatch, w, captured):
     monkeypatch.setattr(w, "_submit_answers", fake_submit)
 
 
+class TestSubmitCookie:
+    def test_submit_carries_cookie_header(self, monkeypatch):
+        """提交请求必须显式携带 Cookie，不能依赖共享 Session 的 cookie 池
+        （并发刷课时池会被其他线程清空，导致 403）。"""
+        import classis.Media.Work as work_mod
+
+        w = make_work()
+        captured = {}
+
+        class FakeResp:
+            status_code = 200
+            text = '{"status": true, "msg": "success"}'
+
+            def json(self):
+                return {"status": True, "msg": "success"}
+
+        def fake_post(url, data=None, headers=None, **_kw):
+            captured["headers"] = dict(headers or {})
+            return FakeResp()
+
+        monkeypatch.setattr(work_mod.ses, "post", fake_post)
+        ok, _msg = w._submit_raw(dict(fetch_data()))
+        assert ok
+        assert captured["headers"].get("Cookie") == "k=v"
+
+
 class TestTikuPath:
     def test_completion_multiblank_and_judgement(self, monkeypatch, fake_tiku_cls):
         tiku = fake_tiku_cls({"completion": "北京;京", "judgement": "对"})

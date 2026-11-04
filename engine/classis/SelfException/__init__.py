@@ -17,7 +17,8 @@ class RequestException(Exception):
         self.text = html.text
 
     def __str__(self):
+        body = (self.text or "").strip().replace("\n", " ")[:300]
         return "\n".join([f"Url: {self.html.url}",
                           f"Method: {['Get', 'Post'][self.method]}",
-                          f"Status: {self.html.status_code}"])
-        # + f"Html: {self.html.text}"
+                          f"Status: {self.html.status_code}",
+                          f"Body: {body}"])

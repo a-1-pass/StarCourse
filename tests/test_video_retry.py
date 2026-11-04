@@ -4,7 +4,7 @@
 覆盖：
 - 网络异常 / 超时自动重试；5xx 指数退避重试；429 按 Retry-After 等待
 - 403 切换 rt 重试；400/202 交给上层刷新会话
-- 正常播放 isdrag=0，到达终点 isdrag=4
+- 正常播放 isdrag=3，到达终点 isdrag=4
 - 状态接口多域名重试与 Cookie 兜底
 - duration/playingTime 取整后参与 enc，避免签名不一致
 - 等时长刷取禁用瞬间完成并注入倍速
@@ -199,7 +199,7 @@ class TestAntiDetectionParams:
         assert params["duration"] == 600
         assert params["playingTime"] == 300
         assert params["clipTime"] == "0_600"
-        assert params["attDuration"] == "600"  # 附件缺失时用 duration 兜底
+        assert "attDuration" not in params  # 附件缺失时不伪造 attDuration
         assert params["enc"] == video._get_enc("CL", "job", "OID", 300, 600, "123")
 
     def test_enc_float_equals_integer(self):
@@ -231,7 +231,7 @@ class TestAntiDetectionParams:
 
 
 class TestStudyIsdrag:
-    def test_playback_uses_zero_and_finish_uses_four(self, monkeypatch):
+    def test_playback_uses_three_and_finish_uses_four(self, monkeypatch):
         video = _video(duration=5)
         video.instant_finish = False
         reported = []
@@ -250,8 +250,8 @@ class TestStudyIsdrag:
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 正常播放阶段 isdrag=0，只有终点上报使用 isdrag=4
-        assert [d for _p, d in reported] == [0, 0, 0, 0, 0, 4]
+        # 开场锚定与播放心跳均用 isdrag=3，仅首次到达终点用 isdrag=4
+        assert [d for _p, d in reported] == [3, 3, 3, 3, 3, 3, 4]
 
     def test_instant_finish_disabled_by_run_video(self, monkeypatch):
         video = _video(duration=10)
@@ -261,3 +261,96 @@ class TestStudyIsdrag:
         assert DealVideo.run_video(video, MagicMock(), MagicMock()) is True
         assert video.instant_finish is False
         assert video.speed == 1.5
+
+
+class TestStudyPacing:
+    """进度必须按真实时间 1:1 推进：倍速会让人造进度快于墙钟，
+    平台按墙钟核算学时会丢弃超额部分，导致 playingTime 报满仍不通过。"""
+
+    def test_progress_advances_at_real_time_even_if_speed_gt_1(self, monkeypatch):
+        video = _video(duration=30)
+        video.instant_finish = False
+        video.speed = 2.0
+        speeds = []
+
+        monkeypatch.setattr(
+            video, "get_status",
+            lambda *a, **k: {"status": "success", "duration": 30, "dtoken": "DT"})
+        monkeypatch.setattr(video_mod, "random", SimpleNamespace(uniform=lambda a, b: 0))
+
+        def fake_advance(play_time, _dt, speed, target):
+            speeds.append(speed)
+            return min(float(target), play_time + 1)
+
+        monkeypatch.setattr(video_mod, "advance_play_time", fake_advance)
+        monkeypatch.setattr(
+            video, "_video_progress_log",
+            lambda *a, **k: (a[3] == 4 if len(a) > 3 else False, 200))
+
+        assert video.study() is True
+        assert speeds and set(speeds) == {1.0}
+
+    def test_gives_up_after_bounded_finish_retries(self, monkeypatch):
+        """平台始终不判通过时，补满 FINISH_MAX_RETRIES 次即复核放弃，避免永久占用线程。"""
+        video = _video(duration=10)
+        video.instant_finish = False
+
+        monkeypatch.setattr(
+            video, "get_status",
+            lambda *a, **k: {"status": "success", "duration": 10, "dtoken": "DT"})
+        monkeypatch.setattr(video_mod, "advance_play_time",
+                            lambda _p, _dt, _s, target: float(target))
+        monkeypatch.setattr(video_mod, "random", SimpleNamespace(uniform=lambda a, b: 0))
+        monkeypatch.setattr(video, "_refresh_video_status", lambda *a, **k: None)
+
+        calls = []
+        monkeypatch.setattr(
+            video, "_video_progress_log",
+            lambda *a, **k: (calls.append(a[3] if len(a) > 3 else k.get("isdrag")) or (False, 200)))
+
+        assert video.study() is False
+        # 开场锚定 1 次 + 播放位首报 1 次 + 终点补报 FINISH_MAX_RETRIES 次
+        assert len(calls) == 2 + video_mod.FINISH_MAX_RETRIES
+
+
+class TestThreadLocalSession:
+    """doGet 使用线程本地 Session：全局 ses 不再被清空，杜绝并发 403。"""
+
+    def test_doget_does_not_touch_global_session(self, monkeypatch):
+        import utils
+
+        class FakeResp:
+            status_code = 200
+            text = "ok"
+
+            def close(self):
+                pass
+
+        local_ses = utils._thread_session()
+        monkeypatch.setattr(local_ses, "get", lambda **_kw: FakeResp())
+        monkeypatch.setattr(utils, "jitter_sleep", lambda *a, **k: None)
+
+        utils.ses.headers.clear()
+        utils.ses.headers.update({"X-Marker": "keep-me"})
+        utils.ses.cookies.set("stale", "1")
+
+        assert utils.doGet("https://example.com", headers={"Cookie": "a=1"}) == "ok"
+        # 全局 ses 的 headers/cookies 未被 doGet 清空或重建
+        assert utils.ses.headers.get("X-Marker") == "keep-me"
+        assert utils.ses.cookies.get("stale") == "1"
+
+    def test_thread_session_isolated_across_threads(self):
+        import threading
+        import utils
+
+        main_ses = utils._thread_session()
+        other = []
+
+        def worker():
+            other.append(utils._thread_session())
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+        assert other and other[0] is not main_ses
+        assert utils._thread_session() is main_ses

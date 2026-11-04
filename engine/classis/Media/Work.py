@@ -296,10 +296,23 @@ class Work(Media):
             "https://mooc1-2.chaoxing.com/mooc-ans/api/work",
         ]
 
+        # 作业接口对来源页校验严格：补上作业详情页 Referer 与 AJAX 标记，
+        # 与成熟实现对同一接口的调用保持一致
+        referer = (
+            "https://mooc1.chaoxing.com/mooc-ans/mooc2/work/view"
+            f"?courseId={self.courseId}&classId={self.clazzId}&cpi={self.cpi}"
+            f"&workId={workId}&jobid={jobid}&knowledgeid={self.knowledgeid}"
+            f"&ktoken={self.ktoken}&enc={self.enc}&mooc2=1"
+        )
+        api_headers = dict(self.headers or {})
+        api_headers["Referer"] = referer
+        api_headers["X-Requested-With"] = "XMLHttpRequest"
+        api_headers.setdefault("Accept", "application/json, text/javascript, */*; q=0.01")
+
         for api_url in api_urls:
             try:
                 full_url = f"{api_url}?{query_string}"
-                resp = doGet(url=full_url, headers=self.headers)
+                resp = doGet(url=full_url, headers=api_headers)
 
                 if not resp:
                     continue
@@ -716,6 +729,12 @@ class Work(Media):
                 if k.lower() != "cookie":
                     submit_headers[k] = v
 
+        # 提交请求显式携带 Cookie：共享 Session 的 cookie 池会被并发线程清空，
+        # 依赖 jar 会在多视频并发时随机 403（与题目获取接口的 403 同源）
+        submit_cookie = ""
+        if self.headers and isinstance(self.headers, dict):
+            submit_cookie = self.headers.get("Cookie") or self.headers.get("cookie") or ""
+
         submit_urls = [
             "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew",
             "https://mooc1-1.chaoxing.com/mooc-ans/work/addStudentWorkNew",
@@ -732,6 +751,8 @@ class Work(Media):
                 cur_headers = dict(submit_headers)
                 cur_headers["Host"] = parsed_url.netloc
                 cur_headers["Origin"] = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                if submit_cookie:
+                    cur_headers["Cookie"] = submit_cookie
 
                 resp = ses.post(
                     submit_url,

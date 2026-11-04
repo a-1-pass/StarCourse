@@ -24,7 +24,7 @@ class DealVideo:
         if stop_event is not None:
             video._stop_event = stop_event
 
-        # 等时长刷取必须按正常播放节奏上报（isdrag=0，到达终点才 isdrag=4），
+        # 等时长刷取必须按正常播放节奏上报（isdrag=3，到达终点才 isdrag=4），
         # 禁用「瞬间完成」的两连发 isdrag=4，避免被平台判定为拖拽/学时异常。
         video.instant_finish = False
         if getattr(video, "speed", 1.0) <= 1.0:

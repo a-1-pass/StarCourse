@@ -4,9 +4,10 @@
 本模块在原实现基础上补齐：
 1. 每个请求显式携带账号 Cookie，避免共享 requests.Session 的 cookie 竞争导致 403；
 2. 上报请求分级重试（网络/超时/5xx/429/403/400/202 分别处理，指数退避 + 抖动）；
-3. 正常播放使用 isdrag=0，终点使用 isdrag=4；仅 video-mode=0 保留「瞬间完成」；
-4. duration/playingTime 统一取整后再参与 enc，避免浮点字符串导致签名不一致；
-5. 失败时输出请求参数、HTTP 状态、平台响应摘要，便于定位。
+3. 播放心跳与终点补报使用 isdrag=3，首次到达终点额外提交一次 isdrag=4（与成熟参考实现一致）；仅 video-mode=0 保留「瞬间完成」；
+4. 进度严格按真实时间 1:1 推进（参考项目默认 speed=1.0），避免倍速导致平台按墙钟核算时丢弃超额学时；
+5. duration/playingTime 统一取整后再参与 enc，避免浮点字符串导致签名不一致；
+6. 失败时输出请求参数、HTTP 状态、平台响应摘要，便于定位。
 """
 import hashlib
 import json
@@ -35,7 +36,7 @@ SPEED_MAX = 2.0
 SPEED_DEFAULT = 1.0
 
 # 到达目标时长后，平台仍不判定通过时的最大补报次数
-FINISH_MAX_RETRIES = 5
+FINISH_MAX_RETRIES = 10
 # 单次进度上报内部的最大尝试次数（网络抖动/5xx/429/403 切换 rt）
 REPORT_MAX_RETRIES = 4
 # 状态接口的最大尝试次数（多域名 + 退避）
@@ -446,7 +447,7 @@ class Video(Media):
             f"[{clazzId}][{userid}][{jobid}][{objectId}][{playing_ms}][d_yHJ!$pdA~5][{duration_ms}][{clip_time}]"
             .encode()).hexdigest()
 
-    def _build_report_params(self, _dtoken, _duration, _playingTime, _isdrag: int = 0) -> dict:
+    def _build_report_params(self, _dtoken, _duration, _playingTime, _isdrag: int = 3) -> dict:
         duration_seconds = int(round(float(_duration)))
         playing_seconds = int(round(float(_playingTime)))
         other_info = self.attachment.get("otherInfo", "") or self.attachment.get("otherinfo", "")
@@ -469,8 +470,10 @@ class Video(Media):
 
         if self.videoFaceCaptureEnc:
             params["videoFaceCaptureEnc"] = self.videoFaceCaptureEnc
-        # attDuration 是平台校验时长一致性的字段；附件缺失时用真实 duration 兜底
-        params["attDuration"] = self.attDuration or str(duration_seconds)
+        # attDuration 是平台校验时长一致性的字段；仅当附件/状态提供时才上报，
+        # 缺失时不要伪造，避免与平台记录不一致导致上报被拒（与参考实现一致）
+        if self.attDuration:
+            params["attDuration"] = self.attDuration
         if self.attDurationEnc:
             params["attDurationEnc"] = self.attDurationEnc
         return params
@@ -481,7 +484,7 @@ class Video(Media):
             f"{self.cpi}/{_dtoken}"
         )
 
-    def _video_progress_log(self, _dtoken, _duration, _playingTime, _isdrag: int = 0, headers=None) -> tuple:
+    def _video_progress_log(self, _dtoken, _duration, _playingTime, _isdrag: int = 3, headers=None) -> tuple:
         """上报一次观看进度，内置分级重试。
 
         返回值保持历史二元组 ``(isPassed, http_status)``：
@@ -703,6 +706,15 @@ class Video(Media):
 
         self._log(log, "info", f"视频 '{self.name}' 需要正常刷取，开始进度上报...")
 
+        # 等时长模式：立即上报一次「开始播放」，把首次心跳锚定到会话开始；
+        # 否则首报延迟 30~90s 会压缩平台统计的墙钟跨度，到点仍 isPassed=false
+        if not getattr(self, "instant_finish", True):
+            started, _ = self._video_progress_log(
+                dtoken, target_duration, int(play_time), 3, headers=headers)
+            if started:
+                self._log(log, "success", f"视频 '{self.name}' 刷取完成！")
+                return True
+
         last_log_time = 0
         last_iter = time.time()
         wait_time = int(random.uniform(30, 90))
@@ -734,9 +746,17 @@ class Video(Media):
                           f"jobid={self.jobid}, playingTime={int(play_time)}/{target_duration}"
                           f"{body}{detail}）")
                 return False
-            if at_target or play_time - last_log_time >= wait_time:
-                # 正常播放 isdrag=0；只有到达终点才用 isdrag=4
-                isdrag = 4 if at_target else 0
+            if at_target:
+                should_report = finish_reports < FINISH_MAX_RETRIES
+            else:
+                should_report = play_time - last_log_time >= wait_time
+            if should_report:
+                # 与成熟实现（超星自动刷课参考项目）保持一致：
+                # 播放心跳与终点补报均用 isdrag=3，仅首次到达终点时额外提交一次 isdrag=4
+                if at_target:
+                    isdrag = 4 if finish_reports == 0 else 3
+                else:
+                    isdrag = 3
                 is_passed, state = self._video_progress_log(
                     dtoken, target_duration, int(play_time), isdrag, headers=headers
                 )
@@ -819,7 +839,10 @@ class Video(Media):
 
             dt = time.time() - last_iter
             last_iter = time.time()
-            play_time = advance_play_time(play_time, dt, self.speed, target_duration)
+            # 进度必须按真实时间 1:1 推进（参考项目默认 speed=1.0）：
+            # 倍速会让人造进度快于墙钟，平台按墙钟核算学时会丢弃超额部分，
+            # 最终 playingTime 报满仍 isPassed=false。speed 配置只影响本地展示节奏。
+            play_time = advance_play_time(play_time, dt, 1.0, target_duration)
 
             # 终点补报之间退避；正常播放保持 0.5s 的本地进度推进节奏
             sleep_seconds = (
