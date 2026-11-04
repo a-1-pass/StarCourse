@@ -231,7 +231,7 @@ class TestAntiDetectionParams:
 
 
 class TestStudyIsdrag:
-    def test_playback_uses_three_and_finish_uses_four(self, monkeypatch):
+    def test_playback_and_finish_both_use_three(self, monkeypatch):
         video = _video(duration=5)
         video.instant_finish = False
         reported = []
@@ -245,13 +245,13 @@ class TestStudyIsdrag:
 
         def fake_progress(_dtoken, _duration, playing_time, isdrag=0, headers=None):
             reported.append((playing_time, isdrag))
-            return isdrag == 4, 200
+            return playing_time >= 5, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 开场锚定与播放心跳均用 isdrag=3，仅首次到达终点用 isdrag=4
-        assert [d for _p, d in reported] == [3, 3, 3, 3, 3, 3, 4]
+        # 正常播放（含终点补报）统一使用 isdrag=3；isdrag=4 仅用于瞬间完成
+        assert {d for _p, d in reported} == {3}
 
     def test_instant_finish_disabled_by_run_video(self, monkeypatch):
         video = _video(duration=10)
@@ -260,7 +260,8 @@ class TestStudyIsdrag:
 
         assert DealVideo.run_video(video, MagicMock(), MagicMock()) is True
         assert video.instant_finish is False
-        assert video.speed == 1.5
+        # 正常刷取固定 1 倍速，忽略配置里的倍速
+        assert video.speed == 1.0
 
 
 class TestStudyPacing:
@@ -285,7 +286,7 @@ class TestStudyPacing:
         monkeypatch.setattr(video_mod, "advance_play_time", fake_advance)
         monkeypatch.setattr(
             video, "_video_progress_log",
-            lambda *a, **k: (a[3] == 4 if len(a) > 3 else False, 200))
+            lambda *a, **k: (int(a[2]) >= 30, 200))
 
         assert video.study() is True
         assert speeds and set(speeds) == {1.0}
@@ -309,8 +310,8 @@ class TestStudyPacing:
             lambda *a, **k: (calls.append(a[3] if len(a) > 3 else k.get("isdrag")) or (False, 200)))
 
         assert video.study() is False
-        # 开场锚定 1 次 + 播放位首报 1 次 + 终点补报 FINISH_MAX_RETRIES 次
-        assert len(calls) == 2 + video_mod.FINISH_MAX_RETRIES
+        # 播放位首报 1 次 + 终点补报 FINISH_MAX_RETRIES 次
+        assert len(calls) == 1 + video_mod.FINISH_MAX_RETRIES
 
 
 class TestThreadLocalSession:

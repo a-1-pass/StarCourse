@@ -12,7 +12,7 @@ from classis.Media.Document import Document
 from classis.Media.Hyperlink import Hyperlink
 from classis.Media.Live import Live
 from classis.Media.Read import Read
-from classis.Media.Video import Video, resolve_speed
+from classis.Media.Video import Video
 from classis.Media.Quiz import Quiz
 from classis.Media.Work import Work
 from card_decode import fetch_chapter_attachments, is_live_attachment, is_read_attachment, study_empty_page
@@ -47,8 +47,6 @@ class DealCourse:
         self.mission_list = []
         self.video_mode = GloConfig.data.get("FunConfig").get("deal-mission").get("video-mode")
         self.single_thread = GloConfig.data.get("FunConfig").get("deal-mission").get("single-thread")
-        # 视频倍速（config.yml speed；钳制 1.0~2.0，非法值回退 1.0），仅 video-mode 1 生效
-        self.speed = resolve_speed()
 
         # ── 学习模式与章节级进度 ──
         # GUI 传入优先；缺省回退到 config.yml；最终缺省 'stage'（闯关模式为学习通主流）
@@ -528,10 +526,8 @@ class DealCourse:
                         _audio_fallback._stop_event = self._stop_event
                         finish_status = _audio_fallback.do_finish()
                 else:
-                    # video-mode 1（等时长刷取）：按 config.yml 的 speed 倍率推进上报进度
-                    _video.speed = self.speed
-                    if self.speed > 1.0:
-                        self.log.info(f"   倍速: {self.speed}x")
+                    # video-mode 1（等时长刷取）：固定按正常 1 倍速推进上报进度
+                    _video.speed = 1.0
                     if self.single_thread or self.learning_mode == self.MODE_STAGE:
                         # 闯关模式必须同步等待视频完成：若异步启动，重拉章节时视频还没刷完，
                         # 章节会被提前判 done，刚解锁的后续任务点不会被发现，导致一次刷取漏任务点。

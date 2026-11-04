@@ -4,8 +4,8 @@
 本模块在原实现基础上补齐：
 1. 每个请求显式携带账号 Cookie，避免共享 requests.Session 的 cookie 竞争导致 403；
 2. 上报请求分级重试（网络/超时/5xx/429/403/400/202 分别处理，指数退避 + 抖动）；
-3. 播放心跳与终点补报使用 isdrag=3，首次到达终点额外提交一次 isdrag=4（与成熟参考实现一致）；仅 video-mode=0 保留「瞬间完成」；
-4. 进度严格按真实时间 1:1 推进（参考项目默认 speed=1.0），避免倍速导致平台按墙钟核算时丢弃超额学时；
+3. 播放心跳与终点补报统一使用 isdrag=3（与历史上可成功的实现一致）；仅 video-mode=0 的「瞬间完成」使用 isdrag=4；
+4. 进度严格按真实时间 1:1 推进（固定正常倍速），避免倍速导致平台按墙钟核算时丢弃超额学时；
 5. duration/playingTime 统一取整后再参与 enc，避免浮点字符串导致签名不一致；
 6. 失败时输出请求参数、HTTP 状态、平台响应摘要，便于定位。
 """
@@ -706,15 +706,6 @@ class Video(Media):
 
         self._log(log, "info", f"视频 '{self.name}' 需要正常刷取，开始进度上报...")
 
-        # 等时长模式：立即上报一次「开始播放」，把首次心跳锚定到会话开始；
-        # 否则首报延迟 30~90s 会压缩平台统计的墙钟跨度，到点仍 isPassed=false
-        if not getattr(self, "instant_finish", True):
-            started, _ = self._video_progress_log(
-                dtoken, target_duration, int(play_time), 3, headers=headers)
-            if started:
-                self._log(log, "success", f"视频 '{self.name}' 刷取完成！")
-                return True
-
         last_log_time = 0
         last_iter = time.time()
         wait_time = int(random.uniform(30, 90))
@@ -751,14 +742,10 @@ class Video(Media):
             else:
                 should_report = play_time - last_log_time >= wait_time
             if should_report:
-                # 与成熟实现（超星自动刷课参考项目）保持一致：
-                # 播放心跳与终点补报均用 isdrag=3，仅首次到达终点时额外提交一次 isdrag=4
-                if at_target:
-                    isdrag = 4 if finish_reports == 0 else 3
-                else:
-                    isdrag = 3
+                # 与历史上可成功的实现保持一致：正常播放与终点补报都用 isdrag=3。
+                # isdrag=4 只在瞬间完成（video-mode=0）时使用，避免被平台按拖拽处理。
                 is_passed, state = self._video_progress_log(
-                    dtoken, target_duration, int(play_time), isdrag, headers=headers
+                    dtoken, target_duration, int(play_time), 3, headers=headers
                 )
                 if at_target:
                     finish_reports += 1
