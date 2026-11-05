@@ -288,6 +288,15 @@ def direct_url(old_url: str, headers: dict, ifLoop: bool = False) -> str:
 
 
 def encrypt_des(msg, key):
+    """学习通登录密码 DES 加密。
+
+    Python 3 里 str 是 Unicode，pyDes 只接受 bytes。
+    key 是固定 8 字节字符串 "u2oh6Vu^"（来自官方登录 JS）。
+    """
+    if isinstance(msg, str):
+        msg = msg.encode("utf-8")
+    if isinstance(key, str):
+        key = key.encode("utf-8")
     des_obj = pyDes.des(key, key, pad=None, padmode=pyDes.PAD_PKCS5)
     secret_bytes = des_obj.encrypt(msg, padmode=pyDes.PAD_PKCS5)
     return binascii.b2a_hex(secret_bytes)

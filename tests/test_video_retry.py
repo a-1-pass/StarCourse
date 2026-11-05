@@ -309,26 +309,32 @@ class TestStudyPacing:
         assert video.study() is True
         assert speeds and set(speeds) == {1.0}
 
-    def test_gives_up_after_bounded_finish_retries(self, monkeypatch):
-        """平台始终不判通过时，补满 FINISH_MAX_RETRIES 次即复核放弃，避免永久占用线程。"""
+    def test_gives_up_after_repeated_403(self, monkeypatch):
+        """多次 403 后必须放弃，while 循环不能无限撞 403。"""
         video = _video(duration=10)
+        video._last_error_detail = "模拟 403"
 
         monkeypatch.setattr(
             video, "get_status",
             lambda *a, **k: {"status": "success", "duration": 10, "dtoken": "DT"})
+        monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
         monkeypatch.setattr(video_mod, "advance_play_time",
                             lambda _p, _dt, _s, target: float(target))
-        monkeypatch.setattr(video_mod, "random", SimpleNamespace(uniform=lambda a, b: 0))
-        monkeypatch.setattr(video, "_refresh_video_status", lambda *a, **k: None)
+        monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
+        monkeypatch.setattr(video, "_refresh_video_status",
+                            lambda *a, **k: None)  # 刷新返回 None → 直接失败
 
         calls = []
-        monkeypatch.setattr(
-            video, "_video_progress_log",
-            lambda *a, **k: (calls.append(a[3] if len(a) > 3 else k.get("isdrag")) or (False, 200)))
+        def fake_progress(*_a, **_k):
+            calls.append(1)
+            # 所有心跳都返回 403
+            return False, 403
+
+        monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is False
-        # 1 次 isdrag=4 瞬间完成 + while 循环里最多 FINISH_MAX_RETRIES 次 isdrag=3
-        assert len(calls) <= 2 + video_mod.FINISH_MAX_RETRIES
+        # 403 重试上限 max_forbidden_retry=2：isdrag=4 + 两次 403 + 第三次 403 后退出
+        assert len(calls) <= 1 + 3
 
 
 class TestThreadLocalSession:

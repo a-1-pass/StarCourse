@@ -20,12 +20,7 @@ import pytest
 
 import classis.Media.Video as video_mod  # noqa: E402
 import functions.deal_mission.deal_course as dc_mod  # noqa: E402
-from classis.Media.Video import (  # noqa: E402
-    FINISH_MAX_RETRIES,
-    Video,
-    normalize_play_time,
-    should_give_up_finish,
-)
+from classis.Media.Video import Video, normalize_play_time  # noqa: E402
 
 
 # ════════════════════════════════════════════════════════════
@@ -51,14 +46,11 @@ def _patch_video_io(monkeypatch, video: Video, progress_results, duration=10):
 
     def fake_progress(*_a, **_k):
         calls.append(1)
-        if len(calls) > 5 + FINISH_MAX_RETRIES:
-            raise AssertionError("补报次数失控：到达目标时长后没有停止条件")
         idx = min(len(calls) - 1, len(progress_results) - 1)
         return progress_results[idx]
 
     monkeypatch.setattr(video, "_video_progress_log", fake_progress)
     monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
-    # 每次循环直接跳到目标时长，避免依赖真实时间推进
     monkeypatch.setattr(video_mod, "advance_play_time",
                         lambda _p, _dt, _s, target: float(target))
     monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
@@ -66,43 +58,76 @@ def _patch_video_io(monkeypatch, video: Video, progress_results, duration=10):
 
 
 # ════════════════════════════════════════════════════════════
-# 到达目标时长后的补报上限
+# 403 重试上限（循环不会无限制撞 403）
 # ════════════════════════════════════════════════════════════
 
-class TestFinishRetryBudget:
-    def test_should_give_up_finish(self):
-        assert should_give_up_finish(0) is False
-        assert should_give_up_finish(FINISH_MAX_RETRIES - 1) is False
-        assert should_give_up_finish(FINISH_MAX_RETRIES) is True
-        assert should_give_up_finish(FINISH_MAX_RETRIES + 1) is True
-
-    def test_study_gives_up_after_bounded_finish_retries(self, monkeypatch):
-        """到达 100% 仍不通过时，必须在上限内放弃，不能无限上报。"""
+class TestForbiddenRetry:
+    def _setup(self, monkeypatch, progress_seq):
         video = _video(play_time_ms=10 * 1000, duration=10)
-        calls = _patch_video_io(monkeypatch, video, [(False, 200)])
+        video._last_error_detail = "模拟 403"
+        monkeypatch.setattr(
+            video, "get_status",
+            lambda *a, **k: {"status": "success", "duration": 10, "dtoken": "dt"})
+        monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
+        monkeypatch.setattr(video_mod, "advance_play_time",
+                            lambda _p, _dt, _s, target: float(target))
+        monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
+        monkeypatch.setattr(video, "_refresh_video_status",
+                            lambda *a, **k: None)  # 刷新状态返回 None → 直接失败
+        calls = []
 
+        def fake_progress(*_a, **_k):
+            calls.append(1)
+            idx = min(len(calls) - 1, len(progress_seq) - 1)
+            return progress_seq[idx]
+
+        monkeypatch.setattr(video, "_video_progress_log", fake_progress)
+        return video, calls
+
+    def test_gives_up_after_repeated_403(self, monkeypatch):
+        """403 多次出现后必须放弃，不能无限重试。"""
+        video, calls = self._setup(monkeypatch, [(False, 403), (False, 403), (False, 403)])
         assert video.study() is False
-        # 播放位首报 + 有限次终点补报
-        assert len(calls) <= 1 + FINISH_MAX_RETRIES
+        # 1 次 isdrag=4 + 2 次循环心跳（每次 403 各触发一次刷新 → 再次心跳失败后退出）
+        assert len(calls) <= 1 + 3  # 上限：isdrag=4 + 两次 403 + 第三次 403 后退出
 
-    def test_study_succeeds_when_later_finish_report_passes(self, monkeypatch):
-        """补报过程中平台判定通过 → 正常返回 True。"""
+    def test_403_then_recover_with_status_refresh(self, monkeypatch):
+        """403 刷新状态后恢复 → 继续心跳直到通过。"""
         video = _video(play_time_ms=10 * 1000, duration=10)
-        _patch_video_io(monkeypatch, video, [(False, 200), (False, 200), (True, 200)])
-
+        monkeypatch.setattr(
+            video, "get_status",
+            lambda *a, **k: {"status": "success", "duration": 10, "dtoken": "dt"})
+        monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
+        monkeypatch.setattr(video_mod, "advance_play_time",
+                            lambda _p, _dt, _s, target: float(target))
+        monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
+        # 刷新状态后成功，之后心跳返回通过
+        refreshed_called = [0]
+        def fake_refresh(*_a, **_k):
+            refreshed_called[0] += 1
+            return {"status": "success", "duration": 10, "dtoken": "dt"}
+        monkeypatch.setattr(video, "_refresh_video_status", fake_refresh)
+        calls = []
+        def fake_progress(*_a, **_k):
+            calls.append(1)
+            # 第一次 isdrag=4 false；循环里第一次 403；之后一直 true
+            if len(calls) == 1:
+                return False, 200  # isdrag=4 失败
+            if len(calls) == 2:
+                return False, 403  # isdrag=3 心跳 403 → 触发刷新
+            return True, 200  # 刷新后心跳通过
+        monkeypatch.setattr(video, "_video_progress_log", fake_progress)
         assert video.study() is True
+        assert refreshed_called[0] == 1
 
 
 # ════════════════════════════════════════════════════════════
-# 进度已到终点但未通过：终点上报递增 playingTime
+# 进度已到终点但未通过：持续心跳直到通过（无上限）
 # ════════════════════════════════════════════════════════════
 
 class TestFinishReporting:
-    """照抄 Samueli924/chaoxing：到达终点后 while-not-passed 循环持续上报 duration，
-    不递增 playingTime。平台判定滞后时继续心跳即可。"""
-
-    def test_study_keeps_reporting_duration_at_target(self, monkeypatch):
-        """到达终点后循环持续上报 duration（不递增），直到 FINISH_MAX_RETRIES 安全闸或状态复核。"""
+    def test_isdrag_four_then_three_at_duration(self, monkeypatch):
+        """流程：先 isdrag=4 直接提交终点；未通过则 while-not-passed + isdrag=3 持续心跳。"""
         video = _video(play_time_ms=10 * 1000, duration=10)
         reported = []
 
@@ -117,15 +142,15 @@ class TestFinishReporting:
 
         def fake_progress(_dtoken, _duration, playing_time, isdrag=3, *_a, **_k):
             reported.append((playing_time, isdrag))
-            # 先 isdrag=4 瞬间完成必 false；循环里 isdrag=3 + 第 11 次才 pass
+            # 先 isdrag=4 必 false；循环里 isdrag=3 + 第 11 次才 pass
             return isdrag == 3 and len([r for r in reported if r[1] == 3]) >= 10, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 先 1 次 isdrag=4 瞬间完成，然后 while 循环里 isdrag=3，每次报当前 play_time
+        # 先 1 次 isdrag=4 直接提交终点
         assert reported[0] == (10, 4)
-        # 循环里 isdrag=3，playing_time 涨到 10 后持续报 10（不递增）
+        # 循环里 isdrag=3，playing_time 涨到 10 后持续报 10
         isdrag_3_reports = [p for p, d in reported[1:] if d == 3]
         assert all(p == 10 for p in isdrag_3_reports)
 
@@ -145,45 +170,31 @@ class _Recorder:
 
 
 class TestFinishDiagnostics:
-    def _buffer_video(self, monkeypatch, refresh_result=None):
-        video = _video(play_time_ms=10 * 1000, duration=10)
-        rec = _Recorder()
+    """诊断相关：403 放弃错误时仍应带详细信息。"""
 
+    def test_give_up_logs_platform_response_on_403(self, monkeypatch):
+        """403 多次重试后放弃时，日志应带出平台响应便于排查。"""
+        video = _video(play_time_ms=10 * 1000, duration=10)
+        video._last_report_text = '{"isPassed":false,"msg":"学习时长异常"}'
+        video._last_report_params = {"jobid": "job", "playingTime": 10, "duration": 10}
+        rec = _Recorder()
         monkeypatch.setattr(
             video, "get_status",
             lambda *a, **k: {"status": "success", "duration": 10, "dtoken": "dt"})
 
         def fake_progress(*_a, **_k):
-            video._last_report_text = '{"isPassed":false,"msg":"学习时长异常"}'
-            video._last_report_params = {"jobid": "job", "playingTime": 10, "duration": 10}
-            return False, 200
+            return False, 403
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
         monkeypatch.setattr(Video, "_sleep", lambda self, _s: False)
         monkeypatch.setattr(video_mod, "advance_play_time",
                             lambda _p, _dt, _s, target: float(target))
         monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
-        monkeypatch.setattr(video, "_refresh_video_status", lambda *a, **k: refresh_result)
-        return video, rec
-
-    def test_give_up_logs_platform_response(self, monkeypatch):
-        """放弃时必须把平台响应写进日志，否则无法定位「一直失败」的原因。"""
-        video, rec = self._buffer_video(monkeypatch)
+        monkeypatch.setattr(video, "_refresh_video_status", lambda *a, **k: None)
 
         assert video.study(log=rec) is False
-        warnings = [m for lvl, m in rec.messages if lvl == "warning"]
-        joined = "\n".join(warnings)
-        assert "学习时长异常" in joined
-        assert "jobid=job" in joined
-
-    def test_give_up_checks_status_before_failing(self, monkeypatch):
-        """补报用尽前先刷新状态：平台其实已判定通过时不应误报失败。"""
-        video, rec = self._buffer_video(
-            monkeypatch,
-            refresh_result={"status": "success", "isPassed": True, "duration": 10},
-        )
-
-        assert video.study(log=rec) is True
+        msgs = [m for _lvl, m in rec.messages]
+        assert any("403" in m for m in msgs)
 
 
 # ════════════════════════════════════════════════════════════

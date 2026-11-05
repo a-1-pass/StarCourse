@@ -1,14 +1,13 @@
 # _*_ coding:utf-8 _*_
 """视频/音频任务点刷取。
 
-本模块在原实现基础上补齐：
-1. 每个请求显式携带账号 Cookie，避免共享 requests.Session 的 cookie 竞争导致 403；
-2. 上报请求分级重试（网络/超时/5xx/429/403/400/202 分别处理，指数退避 + 抖动）；
-3. 按参考实现（yatori-dev/yatori-go-core 的视频循环）用 isdrag=0 正常播放上报，
-   到达终点后每次上报把 playingTime 递增 1，让平台持续产生新增学时；
-4. 进度严格按真实时间 1:1 推进（固定正常倍速），避免倍速导致平台按墙钟核算时丢弃超额学时；
-5. duration/playingTime 统一取整后再参与 enc，避免浮点字符串导致签名不一致；
-6. 失败时输出请求参数、HTTP 状态、平台响应摘要，便于定位。
+职责：
+1. 拉取平台状态接口，拿到 dtoken/duration/rt/人脸参数；
+2. 构造 PC 端学时上报请求（带分级重试、Cookie 显式携带、网络异常退避）；
+3. 按 isdrag 语义驱动视频刷取：先 isdrag=4 直接提交终点（若任务点已完成则秒过），
+   未通过则进入播放循环，每次心跳 isdrag=3 带上实时播放进度；
+4. 进度按真实时间 1:1 推进（倍速上报会被平台按墙钟核算丢弃）；
+5. duration / playingTime 取整后再参与 enc，避免浮点签名不一致。
 """
 import hashlib
 import json
@@ -31,37 +30,22 @@ _VIDEO_LOG_WAIT_MAX = 4.0
 _video_log_lock = threading.Lock()
 _last_video_log_time = 0.0
 
-# 视频倍速配置（config.yml FunConfig.deal-mission.speed）的钳制范围
 SPEED_MIN = 1.0
 SPEED_MAX = 2.0
 SPEED_DEFAULT = 1.0
 
-# 到达目标时长后，平台仍不判定通过时的最大补报次数
-# 照抄 Samueli924/chaoxing 的 while-not-passed 循环，但加上安全上限避免卡死
-# 120 次 ≈ 2 分钟（每 1s 一次心跳），足够平台判定
-FINISH_MAX_RETRIES = 120
 # 单次进度上报内部的最大尝试次数（网络抖动/5xx/429/403 切换 rt）
 REPORT_MAX_RETRIES = 4
 # 状态接口的最大尝试次数（多域名 + 退避）
 STATUS_MAX_RETRIES = 3
-# 上报/状态请求超时：(连接超时, 读取超时)。弱网环境下比旧值 8s 更宽容
+# 上报/状态请求超时：(连接超时, 读取超时)
 REQUEST_TIMEOUT = (5, 15)
 
-# 状态接口：先走移动端 API 域名，再回退 PC 域名（与 yatori-go-core / yuban10703 一致）
+# 状态接口：先走移动端 API 域名，再回退 PC 域名
 STATUS_HOSTS = (
     "https://mooc1-api.chaoxing.com",
     "https://mooc1.chaoxing.com",
 )
-
-
-def should_give_up_finish(finish_reports: int, max_retries: int = FINISH_MAX_RETRIES) -> bool:
-    """到达目标时长后仍未被判定通过时，是否应停止补报并放弃本轮。
-
-    旧逻辑在 100% 后无上限重复上报，会让单个视频永久占用刷取线程，
-    顺序/闯关模式下后续任务点因此全部处理不到。补报次数达到上限即放弃，
-    交给同一轮内的失败任务点补刷。
-    """
-    return finish_reports >= max_retries
 
 
 def normalize_play_time(raw, target_duration):
@@ -184,44 +168,6 @@ def _video_log_rate_limit():
 
 def get_timestamp():
     return str(int(time.time() * 1000))
-
-
-# ── 学习通 App 设备指纹（照抄 yatori-go-core 的 XueXiTongLoginApi.GetUA）────
-_APP_VERSION = "6.7.5"
-_APP_BUILD = "10941_314"  # 对应 6.7.5 版本
-_DEVICE_VENDOR = "MI10"
-_ANDROID_VERSION = "Android 11"
-
-
-def _app_imei(userid: str) -> str:
-    """按账号派生稳定的 32 位设备指纹。
-
-    yatori 首次运行随机生成后持久化；这里用 userid 派生，保证同一账号
-    多会话/多进程设备指纹一致，避免被风控判定为设备漂移。
-    """
-    return hashlib.md5(f"starcourse-xxt-{userid}".encode()).hexdigest()
-
-
-def _mobile_user_agent(userid: str) -> str:
-    """学习通 App 的 WebView UA（schild 为固定格式负载的 MD5）。"""
-    imei = _app_imei(userid)
-    sign_payload = " ".join([
-        "(schild:ipL$TkeiEmfy1gTXb2XHrdLN0a@7c^vu)",
-        f"(device:{_DEVICE_VENDOR})",
-        "Language/zh_CN",
-        f"com.chaoxing.mobile/ChaoXingStudy_3_{_APP_VERSION}_android_phone_{_APP_BUILD}",
-        f"(@Kalimdor)_{imei}",
-    ])
-    schild = hashlib.md5(sign_payload.encode()).hexdigest()
-    return " ".join([
-        f"Mozilla/5.0 (Linux; {_ANDROID_VERSION}; {_DEVICE_VENDOR} Build/QKQ1.190929.002; wv)",
-        "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/79.0.3945.116 Mobile Safari/537.36",
-        f"(schild:{schild})",
-        f"(device:{_DEVICE_VENDOR})",
-        "Language/zh_CN",
-        f"com.chaoxing.mobile/ChaoXingStudy_3_{_APP_VERSION}_android_phone_{_APP_BUILD}",
-        f"(@Kalimdor)_{imei}",
-    ])
 
 
 class Video(Media):
@@ -432,7 +378,7 @@ class Video(Media):
     # ── 进度上报 ─────────────────────────────────────────────
 
     def _get_report_headers(self) -> dict:
-        """上报请求头——完全照抄 Samueli924/chaoxing gc.VIDEO_HEADERS / gc.AUDIO_HEADERS。"""
+        """PC 端学时上报请求头（显式携带 Cookie 避免共享 Session 被清空）。"""
         referer = (
             "https://mooc1.chaoxing.com/ananas/modules/audio/index_new.html?v=2025-0725-1842"
             if self.dtype == "Audio"
@@ -467,7 +413,7 @@ class Video(Media):
             .encode()).hexdigest()
 
     def _build_report_params(self, _dtoken, _duration, _playingTime, _isdrag: int = 3) -> dict:
-        """上报参数构造——完全照抄 Samueli924/chaoxing api/base.py video_progress_log。"""
+        """构造一次 progress_log 上报的参数字典。"""
         duration_seconds = int(round(float(_duration)))
         playing_seconds = int(round(float(_playingTime)))
         other_info = self.attachment.get("otherInfo", "") or self.attachment.get("otherinfo", "")
@@ -659,30 +605,41 @@ class Video(Media):
         else:
             getattr(loguru.logger, level if level != "success" else "success", loguru.logger.info)(msg)
 
-    def _finish_retry_delay(self, finish_reports: int) -> float:
-        """终点补报的间隔：参考实现每秒一次，这里叠加少量抖动，避免整秒机械连发。"""
-        return 1.0 + random.uniform(0, 0.5)
-
     def study(self, all_time: int = 0, log=None) -> bool:
-        """视频刷取主循环——完全照抄 Samueli924/chaoxing api/base.py study_video。"""
+        """视频刷取主循环。
+
+        流程：
+        1. 拉取状态接口，拿到 duration / dtoken 等字段；
+        2. 先以 isdrag=4 直接提交终点，任务点已判定通过时秒过；
+        3. 未通过则进入 while-not-passed 播放循环：
+           - 心跳条件：play_time - last_log_time >= wait_time 或 play_time 已到 duration；
+           - 每次心跳 isdrag=3 带上当前 play_time；
+           - 进度随真实时间推进（speed=1.0，不加速）；
+           - 遇到 403 刷新状态，403 重试多次后仍失败则退出；
+           - 遇到 400 / 202 / 网络异常等直接退出（由上层刷新会话）。
+        """
         if self._stopped():
             self._log(log, "warning", "视频刷取已被停止")
             return False
+
         video_status = self.get_status()
         if not video_status:
-            detail = self._last_error_detail or "接口无有效响应"
-            self._log(log, "error", f"视频 '{self.name}' 状态获取失败：{detail}")
+            self._log(log, "error",
+                      f"视频 '{self.name}' 状态获取失败："
+                      f"{self._last_error_detail or '接口无有效响应'}")
             return False
 
         if video_status.get("status") != "success":
-            self._log(log, "error", f"视频 '{self.name}' 状态异常: {video_status.get('status')}")
+            self._log(log, "error",
+                      f"视频 '{self.name}' 状态异常: {video_status.get('status')}")
             return False
 
         duration = normalize_duration(video_status.get('duration'))
         dtoken = video_status.get('dtoken')
         if not duration or not dtoken:
             self._log(log, "error",
-                      f"视频 '{self.name}' 状态无效: duration={duration}, dtoken={dtoken}")
+                      f"视频 '{self.name}' 状态字段无效: "
+                      f"duration={duration}, dtoken={'有' if dtoken else '无'}")
             return False
 
         self._apply_status(video_status)
@@ -692,74 +649,87 @@ class Video(Media):
         except (TypeError, ValueError):
             target_duration = duration
         if target_duration <= 0:
-            self._log(log, "error", f"视频 '{self.name}' 目标时长无效: {target_duration}")
+            self._log(log, "error",
+                      f"视频 '{self.name}' 目标时长无效: {target_duration}")
             return False
 
-        # 照抄 Samueli924：playTime 从附件读，毫秒转秒
+        # 从附件的 playTime 恢复续学位置（毫秒→秒，超过时长的按毫秒处理）
         play_time = self._resume_play_time(target_duration)
         if play_time > 0:
-            self._log(log, "info", f"视频 '{self.name}' 从 {int(play_time)} 秒处继续刷取")
+            self._log(log, "info",
+                      f"视频 '{self.name}' 从 {int(play_time)} 秒处继续")
 
-        self._log(log, "info", f"视频 '{self.name}' 开始任务, 总时长: {duration}s, 已进行: {int(play_time)}s")
+        self._log(log, "info",
+                  f"视频 '{self.name}' 开始任务, "
+                  f"总时长: {duration}s, 已进行: {int(play_time)}s")
 
-        # ── 瞬间完成（照抄 Samueli924 line 886-890）──────────
-        # 平台若已判定通过会立即返回 isPassed=true，无需进入播放循环
+        # 直接提交终点（isdrag=4）——任务点已判定通过时秒过
         passed, state = self._video_progress_log(
             dtoken, duration, duration, 4, headers=headers)
         if passed:
             self._log(log, "success", f"视频 '{self.name}' 瞬间完成!")
             return True
-        loguru.logger.debug("瞬间完成未通过: jobid=%s, HTTP=%s, detail=%s",
+        loguru.logger.debug("终点尝试未通过: jobid=%s, HTTP=%s, detail=%s",
                             self.jobid, state, self._last_error_detail)
 
-        # ── 播放循环（照抄 Samueli924 line 894-955）──────────
-        last_log_time = 0
+        # 播放循环
+        last_log_time = 0.0
         last_iter = time.time()
         wait_time = int(random.uniform(30, 90))
         forbidden_retry = 0
         max_forbidden_retry = 2
-        finish_reports = 0  # 到达终点后的心跳计数（安全闸）
 
         while not passed:
             if self._stopped():
                 self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
                 return False
 
-            # 照抄 Samueli924 line 896：play_time - last_log_time >= wait_time OR play_time == duration
-            if play_time - last_log_time >= wait_time or play_time == duration:
+            need_heartbeat = (
+                play_time - last_log_time >= wait_time
+                or play_time >= duration
+            )
+            if need_heartbeat:
                 passed, state = self._video_progress_log(
                     dtoken, duration, int(play_time), 3, headers=headers)
 
                 if state == 403:
                     if forbidden_retry >= max_forbidden_retry:
                         self._log(log, "warning",
-                                  f"视频 '{self.name}' 403重试失败，跳过；"
+                                  f"视频 '{self.name}' 403重试多次仍未恢复，跳过；"
                                   f"最后错误: {self._last_error_detail}")
                         return False
                     forbidden_retry += 1
                     self._log(log, "warning",
-                              f"视频 '{self.name}' 出现403报错, 正在尝试刷新会话状态 (第{forbidden_retry}次)")
+                              f"视频 '{self.name}' 出现403，刷新状态后重试 "
+                              f"(第{forbidden_retry}/{max_forbidden_retry}次)")
                     if self._sleep(random.uniform(2, 4)):
-                        self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
                         return False
                     refreshed_meta = self._refresh_video_status(self.dtype)
                     if refreshed_meta:
                         dtoken = refreshed_meta.get("dtoken", dtoken)
-                        duration = normalize_duration(refreshed_meta.get("duration")) or duration
-                        target_duration = duration if all_time == 0 else min(int(all_time) * 60, duration)
-                        normalized_play_time = normalize_play_time(
+                        new_dur = normalize_duration(refreshed_meta.get("duration"))
+                        if new_dur:
+                            duration = new_dur
+                            target_duration = (
+                                duration if all_time == 0
+                                else min(int(all_time) * 60, duration)
+                            )
+                        np = normalize_play_time(
                             refreshed_meta.get("playTime"), target_duration)
-                        if normalized_play_time is not None:
-                            play_time = normalized_play_time
-                        loguru.logger.debug(f"刷新后 dtoken={dtoken}, duration={duration}, play_time={play_time}")
+                        if np is not None:
+                            play_time = np
+                        loguru.logger.debug(
+                            "刷新后 dtoken=%s, duration=%s, play_time=%s",
+                            dtoken, duration, play_time)
                         continue
                     self._log(log, "error",
-                              f"视频 '{self.name}' 403后刷新状态失败: {self._last_error_detail}")
+                              f"视频 '{self.name}' 403后刷新状态失败: "
+                              f"{self._last_error_detail}")
                     return False
 
-                elif not passed and state != 200:
+                if not passed and state != 200:
                     self._log(log, "error",
-                              f"视频 '{self.name}' 上报异常 HTTP {state}；"
+                              f"视频 '{self.name}' 上报异常 HTTP {state}; "
                               f"最后错误: {self._last_error_detail or '未知'}")
                     return False
 
@@ -774,31 +744,15 @@ class Video(Media):
 
                 wait_time = int(random.uniform(30, 90))
                 last_log_time = play_time
-                if play_time >= duration:
-                    finish_reports += 1
 
-            # 进度推进：照抄 Samueli924 line 936-938，speed=1.0（真实时间 1:1）
+            # 进度随真实时间推进；speed 固定 1.0
             dt = time.time() - last_iter
             last_iter = time.time()
-            play_time = advance_play_time(play_time, dt, 1.0, target_duration)
+            play_time = advance_play_time(
+                play_time, dt, 1.0, target_duration)
 
-            # 照抄 Samueli924：循环内 THRESHOLD=1s sleep
             if self._sleep(1.0):
                 self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
-                return False
-
-            # 安全闸：到达终点后上报次数过多，先复核状态再放弃
-            if play_time >= duration and finish_reports >= FINISH_MAX_RETRIES:
-                refreshed = self._refresh_video_status(self.dtype)
-                if refreshed and refreshed.get("isPassed"):
-                    self._log(log, "success", f"视频 '{self.name}' 任务完成！（状态复核确认通过）")
-                    return True
-                body = f"；平台响应: {self._last_report_text}" if self._last_report_text else ""
-                detail = f"；最后错误: {self._last_error_detail}" if self._last_error_detail else ""
-                self._log(log, "warning",
-                          f"视频 '{self.name}' 到达终点后已心跳 {finish_reports} 次仍未判定通过，"
-                          f"放弃本轮（HTTP {self._last_http_status or state}, jobid={self.jobid}"
-                          f"{body}{detail}）")
                 return False
 
         self._log(log, "success", f"视频 '{self.name}' 任务完成!")
