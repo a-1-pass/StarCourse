@@ -326,15 +326,15 @@ class Video(Media):
                 except requests.RequestException as exc:
                     self._last_error_detail = f"状态请求异常({host}): {exc}"
                     loguru.logger.warning(
-                        "视频状态请求异常(第%d/%d次, %s): %s", attempt, max_retries, host, exc)
+                        f"视频状态请求异常(第{attempt}/{max_retries}次, {host}): {exc}")
                     continue
 
                 if resp.status_code != 200:
                     last_body = (getattr(resp, "text", "") or "")[:120]
                     self._last_error_detail = f"状态接口 HTTP {resp.status_code}({host}): {last_body}"
                     loguru.logger.warning(
-                        "视频状态HTTP错误(第%d/%d次, %s): %s",
-                        attempt, max_retries, host, resp.status_code)
+                        f"视频状态HTTP错误(第{attempt}/{max_retries}次, {host}): "
+                        f"HTTP {resp.status_code}")
                     continue
 
                 try:
@@ -342,13 +342,13 @@ class Video(Media):
                 except (ValueError, json.JSONDecodeError) as exc:
                     last_body = (getattr(resp, "text", "") or "")[:120]
                     self._last_error_detail = f"状态响应非JSON({host}): {exc}; {last_body}"
-                    loguru.logger.warning("视频状态JSON解析失败: %s", exc)
+                    loguru.logger.warning(f"视频状态JSON解析失败: {exc}")
                     continue
 
                 if not isinstance(status_json, dict) or status_json.get("status") != "success":
                     last_body = json.dumps(status_json, ensure_ascii=False)[:120] if isinstance(status_json, dict) else last_body
                     self._last_error_detail = f"状态非success({host}): {last_body}"
-                    loguru.logger.warning("视频状态返回非success: %s", last_body)
+                    loguru.logger.warning(f"视频状态返回非success: {last_body}")
                     continue
 
                 duration = normalize_duration(status_json.get("duration"))
@@ -357,13 +357,15 @@ class Video(Media):
                     self._last_error_detail = (
                         f"状态字段无效: duration={status_json.get('duration')}, "
                         f"dtoken={'有' if dtoken else '无'}")
-                    loguru.logger.warning("视频状态字段无效: duration=%s, dtoken=%s",
-                                          status_json.get("duration"), bool(dtoken))
+                    loguru.logger.warning(
+                        f"视频状态字段无效: duration={status_json.get('duration')}, "
+                        f"dtoken={'有' if dtoken else '无'}")
                     continue
 
                 self._apply_status(status_json)
                 self._last_error_detail = ""
-                loguru.logger.debug("视频状态成功: duration=%s, rt=%s", duration, self._resolve_rt())
+                loguru.logger.debug(
+                    f"视频状态成功: duration={duration}, rt={self._resolve_rt()}")
                 return status_json
 
             if attempt < max_retries:
@@ -371,8 +373,8 @@ class Video(Media):
                     return None
 
         loguru.logger.error(
-            "视频状态请求失败: objectId=%s, 重试%d次后仍失败, 最后错误=%s",
-            self.objectId, max_retries, self._last_error_detail or "未知")
+            f"视频状态请求失败: objectId={self.objectId}, 重试{max_retries}次后仍失败, "
+            f"最后错误={self._last_error_detail or '未知'}")
         return None
 
     # ── 进度上报 ─────────────────────────────────────────────
@@ -484,11 +486,10 @@ class Video(Media):
                 self._last_http_status = 0
                 self._last_error_detail = f"网络异常: {exc}"
                 loguru.logger.warning(
-                    "进度上报网络异常(第%d/%d次): jobid=%s, objectId=%s, "
-                    "playingTime=%s/%s, isdrag=%s, rt=%s, error=%s",
-                    attempt, REPORT_MAX_RETRIES, self.jobid, self.objectId,
-                    params.get("playingTime"), params.get("duration"),
-                    params.get("isdrag"), params.get("rt"), exc)
+                    f"进度上报网络异常(第{attempt}/{REPORT_MAX_RETRIES}次): "
+                    f"jobid={self.jobid}, objectId={self.objectId}, "
+                    f"playingTime={params.get('playingTime')}/{params.get('duration')}, "
+                    f"isdrag={params.get('isdrag')}, rt={params.get('rt')}, error={exc}")
                 if attempt < REPORT_MAX_RETRIES:
                     if self._sleep(_backoff_delay(attempt)):
                         return False, last_state
@@ -506,8 +507,8 @@ class Video(Media):
                 if passed is None:
                     self._last_error_detail = f"上报响应非JSON: {text[:120]}"
                     loguru.logger.warning(
-                        "进度上报响应无法解析: jobid=%s, playingTime=%s, body=%s",
-                        self.jobid, params.get("playingTime"), text[:120])
+                        f"进度上报响应无法解析: jobid={self.jobid}, "
+                        f"playingTime={params.get('playingTime')}, body={text[:120]}")
                     return False, 200
                 if passed:
                     self._last_error_detail = ""
@@ -520,33 +521,32 @@ class Video(Media):
                 if rt_index < len(rt_candidates) - 1:
                     rt_index += 1
                     loguru.logger.warning(
-                        "进度上报返回403，切换 rt=%s 重试(第%d/%d次): jobid=%s, playingTime=%s",
-                        rt_candidates[rt_index], attempt, REPORT_MAX_RETRIES,
-                        self.jobid, params.get("playingTime"))
+                        f"进度上报返回403，切换 rt={rt_candidates[rt_index]} "
+                        f"重试(第{attempt}/{REPORT_MAX_RETRIES}次): "
+                        f"jobid={self.jobid}, playingTime={params.get('playingTime')}")
                     if self._sleep(_backoff_delay(attempt)):
                         return False, last_state
                     continue
                 loguru.logger.warning(
-                    "进度上报连续403（可能触发人脸/会话校验）: jobid=%s, objectId=%s, "
-                    "playingTime=%s, rt=%s, body=%s",
-                    self.jobid, self.objectId, params.get("playingTime"),
-                    params.get("rt"), text[:120])
+                    f"进度上报连续403（可能触发人脸/会话校验）: jobid={self.jobid}, "
+                    f"objectId={self.objectId}, playingTime={params.get('playingTime')}, "
+                    f"rt={params.get('rt')}, body={text[:120]}")
                 break
 
             if code in (400, 202):
                 self._last_error_detail = f"HTTP {code}: {text[:120]}"
                 loguru.logger.warning(
-                    "进度上报返回%s（疑似会话失效，交由上层刷新状态/重登）: "
-                    "jobid=%s, playingTime=%s, body=%s",
-                    code, self.jobid, params.get("playingTime"), text[:120])
+                    f"进度上报返回{code}（疑似会话失效，交由上层刷新状态/重登）: "
+                    f"jobid={self.jobid}, playingTime={params.get('playingTime')}, "
+                    f"body={text[:120]}")
                 break
 
             if code == 429:
                 self._last_error_detail = f"HTTP 429 限流: {text[:120]}"
                 delay = _retry_after_seconds(resp) or _backoff_delay(attempt, base=2.0)
                 loguru.logger.warning(
-                    "进度上报被限流，%.1fs 后重试(第%d/%d次): jobid=%s",
-                    delay, attempt, REPORT_MAX_RETRIES, self.jobid)
+                    f"进度上报被限流，{delay:.1f}s 后重试"
+                    f"(第{attempt}/{REPORT_MAX_RETRIES}次): jobid={self.jobid}")
                 if attempt < REPORT_MAX_RETRIES:
                     if self._sleep(delay):
                         return False, last_state
@@ -556,8 +556,8 @@ class Video(Media):
             if code >= 500:
                 self._last_error_detail = f"HTTP {code}: {text[:120]}"
                 loguru.logger.warning(
-                    "进度上报服务端错误(第%d/%d次): jobid=%s, HTTP=%s, body=%s",
-                    attempt, REPORT_MAX_RETRIES, self.jobid, code, text[:120])
+                    f"进度上报服务端错误(第{attempt}/{REPORT_MAX_RETRIES}次): "
+                    f"jobid={self.jobid}, HTTP={code}, body={text[:120]}")
                 if attempt < REPORT_MAX_RETRIES:
                     if self._sleep(_backoff_delay(attempt)):
                         return False, last_state
@@ -567,8 +567,8 @@ class Video(Media):
             # 其他状态码：重试一次以内，避免个别网关抖动直接失败
             self._last_error_detail = f"HTTP {code}: {text[:120]}"
             loguru.logger.warning(
-                "进度上报未知状态(第%d/%d次): jobid=%s, HTTP=%s, body=%s",
-                attempt, REPORT_MAX_RETRIES, self.jobid, code, text[:120])
+                f"进度上报未知状态(第{attempt}/{REPORT_MAX_RETRIES}次): "
+                f"jobid={self.jobid}, HTTP={code}, body={text[:120]}")
             if attempt < min(2, REPORT_MAX_RETRIES):
                 if self._sleep(_backoff_delay(attempt)):
                     return False, last_state
@@ -576,11 +576,10 @@ class Video(Media):
             break
 
         loguru.logger.error(
-            "视频进度上报最终失败: jobid=%s, objectId=%s, playingTime=%s/%s, "
-            "isdrag=%s, lastHTTP=%s, lastError=%s, lastBody=%s",
-            self.jobid, self.objectId, params.get("playingTime"), params.get("duration"),
-            params.get("isdrag"), last_state, self._last_error_detail,
-            self._last_report_text[:120])
+            f"视频进度上报最终失败: jobid={self.jobid}, objectId={self.objectId}, "
+            f"playingTime={params.get('playingTime')}/{params.get('duration')}, "
+            f"isdrag={params.get('isdrag')}, lastHTTP={last_state}, "
+            f"lastError={self._last_error_detail}, lastBody={self._last_report_text[:120]}")
         return False, last_state
 
     def _refresh_video_status(self, _type=None) -> 'dict|None':
@@ -669,8 +668,9 @@ class Video(Media):
         if passed:
             self._log(log, "success", f"视频 '{self.name}' 瞬间完成!")
             return True
-        loguru.logger.debug("终点尝试未通过: jobid=%s, HTTP=%s, detail=%s",
-                            self.jobid, state, self._last_error_detail)
+        loguru.logger.debug(
+            f"终点尝试未通过: jobid={self.jobid}, HTTP={state}, "
+            f"detail={self._last_error_detail}")
 
         # 播放循环
         last_log_time = 0.0
@@ -719,8 +719,8 @@ class Video(Media):
                         if np is not None:
                             play_time = np
                         loguru.logger.debug(
-                            "刷新后 dtoken=%s, duration=%s, play_time=%s",
-                            dtoken, duration, play_time)
+                            f"刷新后 dtoken={dtoken}, duration={duration}, "
+                            f"play_time={play_time}")
                         continue
                     self._log(log, "error",
                               f"视频 '{self.name}' 403后刷新状态失败: "
@@ -763,6 +763,5 @@ class Video(Media):
             return self.study(all_time=0)
         except Exception as exc:
             # 兼容 video-mode=0 的同步调用路径：异常不能让整个任务点静默丢失
-            loguru.logger.error(
-                "视频 '%s' 刷取异常: %s", self.name, exc, exc_info=True)
+            loguru.logger.exception(f"视频 '{self.name}' 刷取异常: {exc}")
             return False
