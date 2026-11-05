@@ -51,7 +51,7 @@ def _patch_video_io(monkeypatch, video: Video, progress_results, duration=10):
 
     def fake_progress(*_a, **_k):
         calls.append(1)
-        if len(calls) > 30:
+        if len(calls) > 5 + FINISH_MAX_RETRIES:
             raise AssertionError("补报次数失控：到达目标时长后没有停止条件")
         idx = min(len(calls) - 1, len(progress_results) - 1)
         return progress_results[idx]
@@ -98,15 +98,11 @@ class TestFinishRetryBudget:
 # ════════════════════════════════════════════════════════════
 
 class TestFinishReporting:
-    """附件里的 playTime 已到终点但 isPassed=false 时，不能重复上报同一个值。
+    """照抄 Samueli924/chaoxing：到达终点后 while-not-passed 循环持续上报 duration，
+    不递增 playingTime。平台判定滞后时继续心跳即可。"""
 
-    平台按上报进度累计学时，停在已上报过的终点重复上报不会产生新增量，
-    会永远判不通过。参考实现（yatori-go-core）的做法是终点每次 +1 上报。
-    """
-
-    def test_study_increments_playing_time_at_target(self, monkeypatch):
-        """照抄 yatori-go-core：到达终点后每次上报 playingTime +1，
-        平台按新增学时记账，重复同一个终点值不会被补记。"""
+    def test_study_keeps_reporting_duration_at_target(self, monkeypatch):
+        """到达终点后循环持续上报 duration（不递增），直到 FINISH_MAX_RETRIES 安全闸或状态复核。"""
         video = _video(play_time_ms=10 * 1000, duration=10)
         reported = []
 
@@ -119,15 +115,19 @@ class TestFinishReporting:
         monkeypatch.setattr(video_mod, "random", SimpleNamespace(uniform=lambda a, b: 0))
         monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
 
-        def fake_progress(_dtoken, _duration, playing_time, *_a, **_k):
-            reported.append(playing_time)
-            return len(reported) >= 11, 200
+        def fake_progress(_dtoken, _duration, playing_time, isdrag=3, *_a, **_k):
+            reported.append((playing_time, isdrag))
+            # 先 isdrag=4 瞬间完成必 false；循环里 isdrag=3 + 第 11 次才 pass
+            return isdrag == 3 and len([r for r in reported if r[1] == 3]) >= 10, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 已在终点：10, 11, 12 ... 逐次 +1，不再重复同一个值
-        assert reported == list(range(10, 21))
+        # 先 1 次 isdrag=4 瞬间完成，然后 while 循环里 isdrag=3，每次报当前 play_time
+        assert reported[0] == (10, 4)
+        # 循环里 isdrag=3，playing_time 涨到 10 后持续报 10（不递增）
+        isdrag_3_reports = [p for p, d in reported[1:] if d == 3]
+        assert all(p == 10 for p in isdrag_3_reports)
 
 
 # ════════════════════════════════════════════════════════════

@@ -190,35 +190,35 @@ class TestStatusRetry:
 class TestAntiDetectionParams:
     def test_cookie_passed_explicitly(self):
         video = _video()
-        cookie = video._get_report_headers()["Cookie"]
-        # 视频走手机端通道：账号 Cookie 之外还要带播放器环境 Cookie
-        assert "fid=9790; _uid=123; cpi=CPI" in cookie
-        assert "fanyamoocs=11401F839C536D9E" in cookie
-        assert "videojs_id=1778753" in cookie
+        # PC 通道：Cookie 直接透传（照抄 Samueli924/chaoxing）
+        assert video._get_report_headers()["Cookie"] == "fid=9790; _uid=123; cpi=CPI"
         assert video._build_status_headers()["Cookie"] == "fid=9790; _uid=123; cpi=CPI"
-
-    def test_video_mobile_ua_matches_yatori(self):
-        video = _video()
-        ua = video._get_report_headers()["User-Agent"]
-        # 照抄 yatori 手机端 UA：含设备指纹 schild 与 (@Kalimdor)_imei
-        assert "com.chaoxing.mobile/ChaoXingStudy_3_6.7.5_android_phone_10941_314" in ua
-        assert "(schild:" in ua
-        assert "(@Kalimdor)_" in ua
-        # 同一账号设备指纹必须稳定，避免风控判定设备漂移
-        assert ua == _video()._get_report_headers()["User-Agent"]
 
     def test_report_params_are_integers_and_enc_consistent(self, monkeypatch):
         video = _video()
-        params = video._build_report_params("dt", 600.0, 300.4, 0)
+        params = video._build_report_params("dt", 600.0, 300.4, 3)
         assert params["duration"] == 600
         assert params["playingTime"] == 300
         assert params["clipTime"] == "0_600"
-        # 照抄 yatori 手机端：attDuration 恒为时长，attDurationEnc/videoFaceCaptureEnc 强制携带
-        assert params["attDuration"] == 600
-        assert params["attDurationEnc"] == ""
-        assert params["videoFaceCaptureEnc"] == ""
-        assert params["view"] == "json"
+        # 照抄 Samueli924/chaoxing：attDuration 只有附件有才发
+        assert "attDuration" not in params
+        assert params["view"] == "pc"
         assert params["enc"] == video._get_enc("CL", "job", "OID", 300, 600, "123")
+
+    def test_att_duration_present_when_attachment_has_it(self):
+        video = Video(
+            {"objectId": "OID", "jobid": "job", "attDuration": "600",
+             "attDurationEnc": "ENC123", "videoFaceCaptureEnc": "FACE"},
+            {"Cookie": "fid=1", "User-Agent": "UA"},
+            {"clazzId": "CL", "courseId": "CID", "cpi": "CPI"},
+            dtype="Video", name="v",
+        )
+        video.userid = "123"
+        params = video._build_report_params("dt", 600, 300, 3)
+        # 照抄 Samueli924：attDuration/attDurationEnc/videoFaceCaptureEnc 有才发
+        assert params["attDuration"] == "600"
+        assert params["attDurationEnc"] == "ENC123"
+        assert params["videoFaceCaptureEnc"] == "FACE"
 
     def test_enc_float_equals_integer(self):
         video = _video()
@@ -249,7 +249,8 @@ class TestAntiDetectionParams:
 
 
 class TestStudyIsdrag:
-    def test_playback_uses_isdrag_zero_and_end_time_increments(self, monkeypatch):
+    def test_instant_four_then_playback_three(self, monkeypatch):
+        """照抄 Samueli924/chaoxing：先 isdrag=4 瞬间完成，失败后 while-not-passed + isdrag=3。"""
         video = _video(duration=5)
         reported = []
 
@@ -260,18 +261,17 @@ class TestStudyIsdrag:
                             lambda p, _dt, _s, target: min(float(target), p + 1))
         monkeypatch.setattr(video_mod, "random", SimpleNamespace(uniform=lambda a, b: 0))
 
-        def fake_progress(_dtoken, _duration, playing_time, isdrag=0, headers=None):
+        def fake_progress(_dtoken, _duration, playing_time, isdrag=3, headers=None):
             reported.append((playing_time, isdrag))
-            # 前两条终点上报仍是 false，第 3 条（playingTime=7）才判定通过
-            return int(playing_time) >= 7, 200
+            # 瞬间完成(isdrag=4)必定 false；循环里 isdrag=3 + playing_time>=5 才 pass
+            return isdrag == 3 and playing_time >= 5, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 参考实现：全部用 isdrag=0 正常播放；到终点后 playingTime 每次 +1
-        assert {d for _p, d in reported} == {0}
-        end_reports = [p for p, _d in reported if p >= 5]
-        assert end_reports[:3] == [5, 6, 7]
+        # 先 1 次 isdrag=4 瞬间完成，然后 while 循环里全是 isdrag=3
+        assert [d for _p, d in reported[:1]] == [4]
+        assert {d for _p, d in reported[1:]} == {3}
 
     def test_run_video_forces_one_x_speed(self, monkeypatch):
         video = _video(duration=10)
@@ -327,8 +327,8 @@ class TestStudyPacing:
             lambda *a, **k: (calls.append(a[3] if len(a) > 3 else k.get("isdrag")) or (False, 200)))
 
         assert video.study() is False
-        # 播放位首报 1 次 + 终点补报 FINISH_MAX_RETRIES 次
-        assert len(calls) == 1 + video_mod.FINISH_MAX_RETRIES
+        # 1 次 isdrag=4 瞬间完成 + while 循环里最多 FINISH_MAX_RETRIES 次 isdrag=3
+        assert len(calls) <= 2 + video_mod.FINISH_MAX_RETRIES
 
 
 class TestThreadLocalSession:
