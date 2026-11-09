@@ -249,8 +249,8 @@ class TestAntiDetectionParams:
 
 
 class TestStudyIsdrag:
-    def test_instant_four_then_playback_three(self, monkeypatch):
-        """照抄 Samueli924/chaoxing：先 isdrag=4 瞬间完成，失败后 while-not-passed + isdrag=3。"""
+    def test_playback_uses_isdrag_three_only(self, monkeypatch):
+        """正常等时长刷取：全程 isdrag=3，不做 isdrag=4 瞬时完成。"""
         video = _video(duration=5)
         reported = []
 
@@ -263,15 +263,15 @@ class TestStudyIsdrag:
 
         def fake_progress(_dtoken, _duration, playing_time, isdrag=3, headers=None):
             reported.append((playing_time, isdrag))
-            # 瞬间完成(isdrag=4)必定 false；循环里 isdrag=3 + playing_time>=5 才 pass
             return isdrag == 3 and playing_time >= 5, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 先 1 次 isdrag=4 瞬间完成，然后 while 循环里全是 isdrag=3
-        assert [d for _p, d in reported[:1]] == [4]
-        assert {d for _p, d in reported[1:]} == {3}
+        # 不允许出现瞬时完成；进度从 0 逐步推进到 5
+        assert {d for _p, d in reported} == {3}
+        assert reported[0][0] < 5
+        assert reported[-1][0] == 5
 
     def test_run_video_forces_one_x_speed(self, monkeypatch):
         video = _video(duration=10)

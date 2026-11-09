@@ -142,17 +142,15 @@ class TestFinishReporting:
 
         def fake_progress(_dtoken, _duration, playing_time, isdrag=3, *_a, **_k):
             reported.append((playing_time, isdrag))
-            # 先 isdrag=4 必 false；循环里 isdrag=3 + 第 11 次才 pass
-            return isdrag == 3 and len([r for r in reported if r[1] == 3]) >= 10, 200
+            return isdrag == 3 and len(reported) >= 10, 200
 
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
 
         assert video.study() is True
-        # 先 1 次 isdrag=4 直接提交终点
-        assert reported[0] == (10, 4)
-        # 循环里 isdrag=3，playing_time 涨到 10 后持续报 10
-        isdrag_3_reports = [p for p, d in reported[1:] if d == 3]
-        assert all(p == 10 for p in isdrag_3_reports)
+        # 全程 isdrag=3，没有瞬时完成
+        assert {d for _p, d in reported} == {3}
+        # playing_time 涨到 10 后持续报 10
+        assert all(p == 10 for p, _d in reported)
 
 
 # ════════════════════════════════════════════════════════════

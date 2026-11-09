@@ -4,8 +4,8 @@
 职责：
 1. 拉取平台状态接口，拿到 dtoken/duration/rt/人脸参数；
 2. 构造 PC 端学时上报请求（带分级重试、Cookie 显式携带、网络异常退避）；
-3. 按 isdrag 语义驱动视频刷取：先 isdrag=4 直接提交终点（若任务点已完成则秒过），
-   未通过则进入播放循环，每次心跳 isdrag=3 带上实时播放进度；
+3. 按正常播放语义驱动视频刷取：从当前进度开始，每次心跳 isdrag=3 带上实时播放进度，
+   直到平台判定通过（不做 isdrag=4 瞬时完成）；
 4. 进度按真实时间 1:1 推进（倍速上报会被平台按墙钟核算丢弃）；
 5. duration / playingTime 取整后再参与 enc，避免浮点签名不一致。
 """
@@ -609,8 +609,8 @@ class Video(Media):
 
         流程：
         1. 拉取状态接口，拿到 duration / dtoken 等字段；
-        2. 先以 isdrag=4 直接提交终点，任务点已判定通过时秒过；
-        3. 未通过则进入 while-not-passed 播放循环：
+        2. 从附件记录的 playTime 处继续，按真实时间 1:1 正常播放（不瞬时完成）；
+        3. while-not-passed 播放循环：
            - 心跳条件：play_time - last_log_time >= wait_time 或 play_time 已到 duration；
            - 每次心跳 isdrag=3 带上当前 play_time；
            - 进度随真实时间推进（speed=1.0，不加速）；
@@ -662,17 +662,17 @@ class Video(Media):
                   f"视频 '{self.name}' 开始任务, "
                   f"总时长: {duration}s, 已进行: {int(play_time)}s")
 
-        # 直接提交终点（isdrag=4）——任务点已判定通过时秒过
-        passed, state = self._video_progress_log(
-            dtoken, duration, duration, 4, headers=headers)
-        if passed:
-            self._log(log, "success", f"视频 '{self.name}' 瞬间完成!")
-            return True
-        loguru.logger.debug(
-            f"终点尝试未通过: jobid={self.jobid}, HTTP={state}, "
-            f"detail={self._last_error_detail}")
+        # 正常等时长播放：不做瞬时完成，进度按真实时间 1:1 推进
+        if play_time >= target_duration:
+            self._log(log, "warning",
+                      f"视频 '{self.name}' 本地记录已到目标时长 {target_duration}s，"
+                      f"但仍需正常心跳确认通过")
+        else:
+            self._log(log, "info",
+                      f"视频 '{self.name}' 开始正常播放，"
+                      f"预计耗时 {target_duration - int(play_time)} 秒")
 
-        # 播放循环
+        passed = False
         last_log_time = 0.0
         last_iter = time.time()
         wait_time = int(random.uniform(30, 90))
