@@ -365,37 +365,35 @@ class DealCourse:
                     status="done")
             self.log.success(f"✓ 章节'{chapter_name}'闯关通过（处理 {chapter_processed_count} 个任务点）")
 
-    # ── 顺序/并发/复习模式：单次遍历（保留原有行为） ──
+    # ── 顺序/并发/复习模式：单次遍历（边拉取边刷取） ──
     def _do_single_pass_mode(self, DealVideo, dao=None):
-        """单次遍历模式：预拉取附件列表 + 一次性处理。
+        """单次遍历模式：流式拉取章节附件，拉到一个就立即开始刷取。
 
         - sequential：按章节顺序处理，不门禁（章节失败仍继续下一章）
         - concurrent：多线程并发刷取（行为同 sequential，并发体现在视频线程池）
         - review：忽略 isPassed 重做，不读进度
+
+        不再预拉取全部章节：并发模式下首个章节的任务点起步后，后续章节的
+        附件请求与已启动的视频线程并行进行，线程池满时 _process_media 会
+        自动阻塞等待，形成生产者-消费者节奏。
         """
         ignore_passed = self.learning_mode != self.MODE_REVIEW
 
-        # 预拉取所有章节附件（与原 do_finish 一致）
-        temp_mission_list = []
-        for mission_item in self.mission_list:
-            if self._check_stopped("预拉取章节附件"):
-                break
-            attach_list = self.deal_chapter(mission_item)
-            if attach_list:
-                temp_mission_list.append((mission_item, attach_list))
-
-        # 计数待处理任务点：非 review 模式仅统计未通过；review 模式统计全部
+        # 总量估算用章节列表里已有的任务点数，避免为了统计而先拉全部附件
+        # review 模式会重做已通过的任务点，用 job_count；其余模式只算未完成数
+        count_key = "job_count" if self.learning_mode == self.MODE_REVIEW else "unfinished_count"
         total_tasks = 0
-        for _mission, attach_list in temp_mission_list:
-            for attach_item in attach_list:
-                for media in attach_item.get("attachments") or []:
-                    if not media.get("isPassed") or not ignore_passed:
-                        total_tasks += 1
+        for mission_item in self.mission_list:
+            try:
+                total_tasks += int(mission_item.get(count_key) or 0)
+            except (TypeError, ValueError):
+                pass
+        if total_tasks > 0:
+            self.log.info(f"📊 预计待完成任务点 {total_tasks} 个")
 
-        self.log.info(f"📊 共检测到 {total_tasks} 个待完成任务点")
         completed_tasks = 0
 
-        for mission_item, attach_list in temp_mission_list:
+        for mission_item in self.mission_list:
             chapter_id = str(mission_item.get('id') or mission_item.get('chapter_id') or "")
             chapter_name = mission_item.get('name', '')
 
@@ -409,6 +407,8 @@ class DealCourse:
                         task_done=completed_tasks, status="partial")
                 return
 
+            # 流式：就地拉取本章附件，拉完立刻开始刷
+            attach_list = self.deal_chapter(mission_item)
             self.log.info(f"开始处理章节'{chapter_name}'")
             if attach_list is False:
                 continue
@@ -436,9 +436,10 @@ class DealCourse:
                         chapter_failed = True
                         self._failed_media.append((media, attach_item, mission_item))
                     if total_tasks > 0:
-                        progress = int((completed_tasks / total_tasks) * 50)
+                        done = min(completed_tasks, total_tasks)
+                        progress = int((done / total_tasks) * 50)
                         progress_bar = "[" + "█" * progress + "░" * (50 - progress) + "]"
-                        percentage = int((completed_tasks / total_tasks) * 100)
+                        percentage = int((done / total_tasks) * 100)
                         self.log.info(f"\n进度: {progress_bar} {percentage}% ({completed_tasks}/{total_tasks})")
 
             # sequential 模式记录章节级进度（不门禁，但供下次续学参考）
