@@ -44,14 +44,14 @@ CacheConfig:
 
 FunConfig:
   deal-mission:
-    video-mode: 0 # 0为立即完成,1为等时长刷取
+    video-mode: 1 # 0为立即完成,1为等时长刷取
     single-thread: false  #是否为单线程刷取，如果为false则会同时启动所有待完成视频节点的线程
     enable-multi-thread: true  # 是否开启多线程并发刷取
-    max-concurrent-threads: 7  # 最大并发线程数
+    max-concurrent-threads: 9  # 最大并发线程数
     cover-rate: 0.5  # 章节检测覆盖率阈值，低于此值仅保存不提交
     submit-mode: auto  # auto=按覆盖率决定, save=仅保存
     notopen-action: retry  # 遇到关闭任务点时的行为: retry-重试, ask-询问, continue-继续
-    speed: 1.5  # 视频播放倍速 (默认1.0, 最大2.0)
+    speed: 1  # 视频播放倍速 (默认1.0, 最大2.0)
     # 注意：并发数不由独立字段配置，实际由上方 enable-multi-thread / max-concurrent-threads 控制
     learning-mode: stage  # 学习模式: stage=闯关(任务点循环重拉+章节门禁) / sequential=顺序 / concurrent=并发 / review=复习
     progress-persistence: true  # 是否启用章节级进度记忆（重启续学）

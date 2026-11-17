@@ -24,7 +24,7 @@ class DealVideo:
         if stop_event is not None:
             video._stop_event = stop_event
 
-        # 按正常 1 倍速播放节奏上报（isdrag=3），进度与真实时间 1:1。
+        # 按正常 1 倍速播放节奏上报，进度与真实时间 1:1（isdrag 语义由 Video.study 决定）。
         video.speed = 1.0
 
         log.info(f"[{thread_name}] 开始处理视频: {video.name}")
