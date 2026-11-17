@@ -973,7 +973,7 @@ class CourseWorkshop(QDialog):
         self._runtime_settings_btn.setObjectName("detail_btn")
         self._runtime_settings_btn.setMinimumHeight(34)
         self._runtime_settings_btn.setToolTip(
-            "修改 engine/config.yml 中的视频模式、倍速、并发数、覆盖率等运行参数")
+            "修改 engine/config.yml 中的并发数、覆盖率、提交方式、字体反混淆、视觉OCR 等运行参数")
         self._runtime_settings_btn.clicked.connect(self._open_runtime_settings)
         row_main.addWidget(self._runtime_settings_btn)
 
@@ -1938,7 +1938,7 @@ class CourseWorkshop(QDialog):
         self._run_single_task_worker("hyperlink")
 
     def _refresh_concurrency_hint(self):
-        """在快捷操作区展示当前并发与视频模式。"""
+        """在快捷操作区展示当前并发、视频播放方式与反混淆状态。"""
         try:
             settings = read_settings(config_yml_path())
         except Exception:
@@ -1948,9 +1948,10 @@ class CourseWorkshop(QDialog):
             self._concurrency_hint.setText("并发: 已关闭（串行执行）")
             self._refresh_summary()
             return
-        video_mode = "等时长" if settings.get("video-mode") == 1 else "立即完成"
+        decode = "开" if settings.get("font-decode", True) else "关"
         self._concurrency_hint.setText(
-            f"并发: {settings.get('max-concurrent-threads', 5)} 线程 · 视频: {video_mode}"
+            f"并发: {settings.get('max-concurrent-threads', 5)} 线程 · "
+            f"视频: 等时长 1x · 字体反混淆: {decode}"
         )
         self._refresh_summary()
 

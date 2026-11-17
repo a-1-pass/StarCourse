@@ -15,17 +15,16 @@ import yaml
 #: GUI 可修改参数的元数据。``path`` 为 YAML 中从根到键的层级路径。
 SETTING_SPECS = [
     {
-        "key": "video-mode", "label": "视频模式", "group": "视频",
-        "path": ("FunConfig", "deal-mission", "video-mode"),
-        "type": "choice", "default": 1,
-        "options": [("立即完成", 0), ("等时长刷取", 1)],
-        "help": "立即完成会跳过播放时长校验，等时长按真实时长刷取（更稳）",
+        "key": "font-decode", "label": "字体反混淆", "group": "答题",
+        "path": ("FunConfig", "deal-mission", "font-decode", "enable"),
+        "type": "bool", "default": True,
+        "help": "还原 font-cxsecret 混淆字体渲染的题干与选项；关闭后这类题目会显示为乱码",
     },
     {
-        "key": "speed", "label": "播放倍速", "group": "视频",
-        "path": ("FunConfig", "deal-mission", "speed"),
-        "type": "float", "default": 1.0, "min": 1.0, "max": 2.0, "step": 0.1,
-        "help": "仅等时长刷取生效，范围 1.0 ~ 2.0",
+        "key": "vision-ocr", "label": "视觉OCR识图", "group": "答题",
+        "path": ("FunConfig", "deal-mission", "vision-ocr", "enable"),
+        "type": "bool", "default": False,
+        "help": "图片题先经多模态大模型识别为文本再作答，需在 AIConfig 配置可用的视觉模型",
     },
     {
         "key": "enable-multi-thread", "label": "启用多线程", "group": "并发",
@@ -132,7 +131,7 @@ CacheConfig:
 
 FunConfig:
   deal-mission:
-    video-mode: 1 # 0为立即完成,1为等时长刷取
+    video-mode: 1 # 兼容保留：0/1 均为等时长正常播放
     single-thread: false
     enable-multi-thread: true
     max-concurrent-threads: 5
@@ -142,7 +141,7 @@ FunConfig:
     speed: 1.0
     learning-mode: stage
     progress-persistence: true
-    video-retry-rounds: 5
+    video-retry-rounds: 10
     exhaustive:
       enable: false
       interval: 3.0
@@ -152,7 +151,7 @@ FunConfig:
       max-vars: 8
       max-combos: 200
     font-decode:
-      enable: false
+      enable: true
       map-table: 'data/font_map_table.json'
     vision-ocr:
       enable: false

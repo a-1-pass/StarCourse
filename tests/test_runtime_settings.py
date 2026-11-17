@@ -34,8 +34,8 @@ TikuConfig:
 
 
 def test_apply_patches_scalar_and_keeps_comment():
-    out = apply_settings(SAMPLE, {"video-mode": 0, "cover-rate": 0.8})
-    assert "video-mode: 0  # 0为立即完成,1为等时长刷取" in out
+    out = apply_settings(SAMPLE, {"max-concurrent-threads": 3, "cover-rate": 0.8})
+    assert "max-concurrent-threads: 3  # 最大并发线程数" in out
     assert "cover-rate: 0.8  # 章节检测覆盖率阈值" in out
 
 
@@ -54,8 +54,8 @@ def test_apply_patches_nested_key_only():
 
 
 def test_apply_formats_numbers_without_trailing_zero():
-    out = apply_settings(SAMPLE, {"speed": 2.0, "max-concurrent-threads": 3})
-    assert "speed: 2\n" in out
+    out = apply_settings(SAMPLE, {"cover-rate": 1.0, "max-concurrent-threads": 3})
+    assert "cover-rate: 1  # 章节检测覆盖率阈值" in out
     assert "max-concurrent-threads: 3  # 最大并发线程数" in out
 
 
@@ -80,7 +80,8 @@ def test_read_settings_returns_spec_keys():
     values = _read_from_text(SAMPLE)
     for spec in SETTING_SPECS:
         assert spec["key"] in values
-    assert values["video-mode"] == 1
+    assert values["font-decode"] is True  # 样例缺该块时回落到默认值
+    assert values["vision-ocr"] is False
     assert values["max-concurrent-threads"] == 5
     assert values["exhaustive-enable"] is False
 
@@ -88,16 +89,16 @@ def test_read_settings_returns_spec_keys():
 def test_save_roundtrip(tmp_path):
     path = tmp_path / "config.yml"
     path.write_text(SAMPLE, encoding="utf-8")
-    save_settings(str(path), {"video-mode": 0, "speed": 1.8})
+    save_settings(str(path), {"submit-mode": "save", "cover-rate": 0.9})
     values = read_settings(str(path))
-    assert values["video-mode"] == 0
-    assert values["speed"] == 1.8
+    assert values["submit-mode"] == "save"
+    assert values["cover-rate"] == 0.9
     assert not os.path.exists(str(path) + ".tmp")
 
 
 def test_read_missing_file_returns_defaults(tmp_path):
     values = read_settings(str(tmp_path / "missing.yml"))
-    assert values["video-mode"] == 1
+    assert values["font-decode"] is True
     assert values["max-concurrent-threads"] == 5
 
 
