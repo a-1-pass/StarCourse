@@ -13,7 +13,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFrame,
+    QCheckBox, QComboBox, QDialog, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
     QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -45,14 +45,12 @@ class FirstRunWizard(QDialog):
 
     def _load_existing_settings(self) -> dict:
         """读取现有 config.yml 作为向导预填值；缺失/读取失败时用安全默认值。"""
-        defaults = {"video-mode": 1, "speed": 1.0, "max-concurrent-threads": 3}
+        defaults = {"max-concurrent-threads": 3}
         try:
             current = read_settings(config_yml_path())
         except Exception:
             return defaults
         return {
-            "video-mode": current.get("video-mode", defaults["video-mode"]),
-            "speed": current.get("speed", defaults["speed"]),
             "max-concurrent-threads": current.get(
                 "max-concurrent-threads", defaults["max-concurrent-threads"]
             ),
@@ -255,30 +253,17 @@ class FirstRunWizard(QDialog):
         grid = QVBoxLayout()
         grid.setSpacing(14)
 
-        # 视频模式
+        # 视频播放方式（固定策略，仅说明）
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("<b style='color:#e2e8f0;'>视频完成方式:</b>"))
-        self._s_video_mode = QComboBox()
-        self._s_video_mode.addItem("等时长刷取（推荐，更稳）", 1)
-        self._s_video_mode.addItem("立即完成（ fastest ）", 0)
-        idx = self._s_video_mode.findData(self._settings["video-mode"])
-        self._s_video_mode.setCurrentIndex(idx if idx >= 0 else 0)
-        row1.addWidget(self._s_video_mode)
+        row1.addWidget(QLabel("<b style='color:#e2e8f0;'>视频播放:</b>"))
+        video_note = QLabel(
+            "<span style='color:#94a3b8;font-size:12px;'>"
+            "等时长正常播放 · 1 倍速（固定，不可调）"
+            "</span>"
+        )
+        row1.addWidget(video_note)
         row1.addStretch()
         grid.addLayout(row1)
-
-        # 倍速
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("<b style='color:#e2e8f0;'>视频倍速:</b>"))
-        self._s_speed = QDoubleSpinBox()
-        self._s_speed.setRange(1.0, 2.0)
-        self._s_speed.setSingleStep(0.1)
-        self._s_speed.setValue(min(2.0, max(1.0, float(self._settings["speed"]))))
-        self._s_speed.setSuffix(" x")
-        row2.addWidget(self._s_speed)
-        row2.addWidget(QLabel("<span style='color:#64748b;font-size:12px;'>建议不超过 2.0</span>"))
-        row2.addStretch()
-        grid.addLayout(row2)
 
         # 并发
         row3 = QHBoxLayout()
@@ -317,7 +302,7 @@ class FirstRunWizard(QDialog):
         # 风险提示
         warn = QLabel(
             "<p style='color:#fbbf24;font-size:12px;margin-top:8px;'>"
-            "⚠️ 使用自动化工具存在被平台风控的风险，请理性使用。建议倍速≤2.0、并发≤5、避免深夜高频运行。"
+            "⚠️ 使用自动化工具存在被平台风控的风险，请理性使用。建议并发≤5、避免深夜高频运行。"
             "</p>"
         )
         warn.setWordWrap(True)
@@ -371,8 +356,6 @@ class FirstRunWizard(QDialog):
         """把向导中的设置写回 config.yml（只改 GUI 暴露的参数，保留其余默认值）。"""
         try:
             values = {
-                "video-mode": self._s_video_mode.currentData(),
-                "speed": self._s_speed.value(),
                 "max-concurrent-threads": self._s_threads.value(),
                 "enable-multi-thread": self._s_threads.value() > 1,
             }

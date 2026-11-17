@@ -33,16 +33,12 @@ def test_wizard_prefills_existing_settings(qapp, monkeypatch):
     import src.first_run as fr
 
     monkeypatch.setattr(fr, "read_settings", lambda path: {
-        "video-mode": 0,
-        "speed": 1.5,
         "max-concurrent-threads": 11,
         "enable-multi-thread": True,
     })
     w = fr.FirstRunWizard()
     try:
-        assert w._s_speed.value() == pytest.approx(1.5)
         assert w._s_threads.value() == 11  # 现有值 11 不应被 SpinBox 上限截断
-        assert w._s_video_mode.currentData() == 0
     finally:
         w.close()
 
@@ -57,9 +53,7 @@ def test_wizard_falls_back_to_defaults_without_config(qapp, monkeypatch):
     monkeypatch.setattr(fr, "read_settings", _boom)
     w = fr.FirstRunWizard()
     try:
-        assert w._s_speed.value() == pytest.approx(1.0)
         assert w._s_threads.value() == 3
-        assert w._s_video_mode.currentData() == 1
     finally:
         w.close()
 
