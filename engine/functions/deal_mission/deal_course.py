@@ -435,12 +435,7 @@ class DealCourse:
                     if not ok:
                         chapter_failed = True
                         self._failed_media.append((media, attach_item, mission_item))
-                    if total_tasks > 0:
-                        done = min(completed_tasks, total_tasks)
-                        progress = int((done / total_tasks) * 50)
-                        progress_bar = "[" + "█" * progress + "░" * (50 - progress) + "]"
-                        percentage = int((done / total_tasks) * 100)
-                        self.log.info(f"\n进度: {progress_bar} {percentage}% ({completed_tasks}/{total_tasks})")
+                    self._log_task_progress(completed_tasks, total_tasks)
 
             # sequential 模式记录章节级进度（不门禁，但供下次续学参考）
             if (dao and self.user_id
@@ -452,6 +447,25 @@ class DealCourse:
                     status="done" if not chapter_failed else "partial")
 
     # ── 单任务点处理（从原 do_finish 抽取，避免循环重拉里重复 100+ 行代码） ──
+    def _log_task_progress(self, submitted: int, total_estimate: int) -> None:
+        """输出任务点进度条。
+
+        submitted 在任务点「已提交」时就 +1，但并发模式下视频是异步线程，
+        线程启动后仍会跑很久。因此用「已提交 - 仍在运行的线程数」还原真正
+        完成的数量，避免进度条在视频刚开始就跑满 100% 后干等。
+        """
+        self.thread_pool = [t for t in self.thread_pool if t.is_alive()]
+        finished = max(0, submitted - len(self.thread_pool))
+        if total_estimate > 0:
+            done = min(finished, total_estimate)
+            ratio = done / total_estimate
+            filled = int(ratio * 50)
+            progress_bar = "[" + "█" * filled + "░" * (50 - filled) + "]"
+            self.log.info(f"进度: {progress_bar} {int(ratio * 100)}% ({done}/{total_estimate})")
+        else:
+            # 章节列表未提供任务点总数时退化为纯计数
+            self.log.info(f"进度: 已完成 {finished} 个任务点")
+
     def _process_media(self, media, attach_item, mission_item, DealVideo) -> tuple:
         """处理单个任务点，返回 (是否成功, 媒体名)。
 
