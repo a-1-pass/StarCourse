@@ -65,7 +65,7 @@ FunConfig:
       max-vars: 10  # 参与穷举的题数上限，超过则放弃穷举
       max-combos: 200  # 候选组合数上限，超过则放弃穷举
     font-decode:  # 字体反混淆：还原 font-cxsecret 动态混淆字体渲染的题干/选项
-      enable: false  # 默认关闭；开启前需先运行 tools/build_font_map.py 生成字形映射表
+      enable: true  # 已用 tools/build_font_map.py 生成映射表（宋体同源），开启反混淆
       map-table: 'data/font_map_table.json'  # 映射表路径（相对 engine 目录）；缺失时自动降级返回原文
     vision-ocr:  # 视觉模型 OCR：图片题（题干/选项为图片）经多模态大模型识别为文本后再作答
       enable: false  # 默认关闭；需 AIConfig 中至少一家 OpenAI 兼容的多模态提供商可用

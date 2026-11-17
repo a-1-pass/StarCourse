@@ -101,6 +101,7 @@ class TestForbiddenRetry:
         monkeypatch.setattr(video_mod, "advance_play_time",
                             lambda _p, _dt, _s, target: float(target))
         monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
+        monkeypatch.setattr(video_mod, "FINISH_REPORT_INTERVAL", 0)
         # 刷新状态后成功，之后心跳返回通过
         refreshed_called = [0]
         def fake_refresh(*_a, **_k):
@@ -110,11 +111,11 @@ class TestForbiddenRetry:
         calls = []
         def fake_progress(*_a, **_k):
             calls.append(1)
-            # 第一次 isdrag=4 false；循环里第一次 403；之后一直 true
+            # 第一次心跳失败；第二次 403；之后一直 true
             if len(calls) == 1:
-                return False, 200  # isdrag=4 失败
+                return False, 200
             if len(calls) == 2:
-                return False, 403  # isdrag=3 心跳 403 → 触发刷新
+                return False, 403  # 触发刷新
             return True, 200  # 刷新后心跳通过
         monkeypatch.setattr(video, "_video_progress_log", fake_progress)
         assert video.study() is True
@@ -126,8 +127,8 @@ class TestForbiddenRetry:
 # ════════════════════════════════════════════════════════════
 
 class TestFinishReporting:
-    def test_isdrag_four_then_three_at_duration(self, monkeypatch):
-        """流程：先 isdrag=4 直接提交终点；未通过则 while-not-passed + isdrag=3 持续心跳。"""
+    def test_heartbeat_only_isdrag_three_at_duration(self, monkeypatch):
+        """流程：等时长播到终点后 while-not-passed + isdrag=3 持续心跳，无瞬时完成。"""
         video = _video(play_time_ms=10 * 1000, duration=10)
         reported = []
 
@@ -139,6 +140,8 @@ class TestFinishReporting:
                             lambda p, _dt, _s, target: min(float(target), p + 1))
         monkeypatch.setattr(video_mod, "random", SimpleNamespace(uniform=lambda a, b: 0))
         monkeypatch.setattr(video_mod, "_video_log_rate_limit", lambda: None)
+        # 终点补报节奏置 0，测试不必真等 20s 间隔
+        monkeypatch.setattr(video_mod, "FINISH_REPORT_INTERVAL", 0)
 
         def fake_progress(_dtoken, _duration, playing_time, isdrag=3, *_a, **_k):
             reported.append((playing_time, isdrag))

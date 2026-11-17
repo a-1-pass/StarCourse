@@ -34,6 +34,13 @@ SPEED_MIN = 1.0
 SPEED_MAX = 2.0
 SPEED_DEFAULT = 1.0
 
+# 到达目标时长后，平台仍不判定通过时的补报节奏（秒）
+FINISH_REPORT_INTERVAL = 20
+# 终点阶段核对平台侧记录的间隔（秒）
+FINISH_PROBE_INTERVAL = 120
+# 终点阶段最长等待（秒）。超时后释放线程交给补刷轮次，
+# 避免单个视频永久占用并发槽位导致整轮刷取停滞
+FINISH_STALL_TIMEOUT = 600
 # 单次进度上报内部的最大尝试次数（网络抖动/5xx/429/403 切换 rt）
 REPORT_MAX_RETRIES = 4
 # 状态接口的最大尝试次数（多域名 + 退避）
@@ -678,16 +685,35 @@ class Video(Media):
         wait_time = int(random.uniform(30, 90))
         forbidden_retry = 0
         max_forbidden_retry = 2
+        # 终点阶段：平台迟迟不判定通过时，放慢补报节奏并定期核对平台记录
+        stall_started_at = None
+        last_finish_report_at = 0.0
+        last_probe_at = 0.0
 
         while not passed:
             if self._stopped():
                 self._log(log, "warning", f"视频 '{self.name}' 刷取已停止")
                 return False
 
-            need_heartbeat = (
-                play_time - last_log_time >= wait_time
-                or play_time >= duration
-            )
+            now = time.time()
+            at_end = play_time >= target_duration
+            if at_end:
+                if stall_started_at is None:
+                    stall_started_at = now
+                    # 刚到达终点时立即补报一次，之后按固定节奏补报
+                    last_finish_report_at = 0.0
+                if now - stall_started_at >= FINISH_STALL_TIMEOUT:
+                    # 终点停留过久仍不通过：释放线程，交给后续补刷轮次重试，
+                    # 否则单个视频会永久占用并发槽位，导致整轮刷取停滞
+                    self._log(log, "warning",
+                              f"视频 '{self.name}' 到达终点后 {FINISH_STALL_TIMEOUT}s "
+                              f"仍未判定通过，释放线程待补刷；"
+                              f"最后响应: {self._last_error_detail or '无'}")
+                    return False
+                need_heartbeat = (now - last_finish_report_at) >= FINISH_REPORT_INTERVAL
+            else:
+                need_heartbeat = play_time - last_log_time >= wait_time
+
             if need_heartbeat:
                 passed, state = self._video_progress_log(
                     dtoken, duration, int(play_time), 3, headers=headers)
@@ -733,6 +759,16 @@ class Video(Media):
                               f"最后错误: {self._last_error_detail or '未知'}")
                     return False
 
+                if at_end:
+                    last_finish_report_at = time.time()
+                    # 定期核对平台侧记录：区分「平台没记账」和「仍在结算」
+                    if last_finish_report_at - last_probe_at >= FINISH_PROBE_INTERVAL:
+                        last_probe_at = last_finish_report_at
+                        if self._probe_platform_progress(target_duration):
+                            self._log(log, "success",
+                                      f"视频 '{self.name}' 任务完成(平台核对通过)!")
+                            return True
+
                 progress_percent = round(play_time / target_duration * 100, 1)
                 self._log(log, "info",
                           f"视频 '{self.name}' 进度: {progress_percent}% "
@@ -757,6 +793,26 @@ class Video(Media):
 
         self._log(log, "success", f"视频 '{self.name}' 任务完成!")
         return True
+
+    def _probe_platform_progress(self, target_duration: float) -> bool:
+        """核对平台侧记录，返回平台是否已判定通过。
+
+        终点补报多轮仍未通过时调用，用来区分两种情况：
+        - 平台记录的本视频进度已接近目标，只是尚未结算 → 继续补报即可；
+        - 平台记录远低于上报值 → 上报未被采信（常见于风控/回退），
+          需要换会话或走官方播放器，继续补报没有意义。
+        """
+        status = self.get_status()
+        if not isinstance(status, dict):
+            return False
+        passed_raw = status.get("isPassed")
+        recorded = normalize_play_time(status.get("playTime"), target_duration)
+        loguru.logger.info(
+            f"平台侧记录核对: 视频='{self.name}', isPassed={passed_raw}, "
+            f"平台playTime={recorded}s, 本地上报={int(target_duration)}s")
+        if isinstance(passed_raw, bool):
+            return passed_raw
+        return str(passed_raw).strip().lower() in ("true", "1", "yes")
 
     def do_finish(self) -> bool:
         try:
